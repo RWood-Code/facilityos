@@ -85,7 +85,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "YOUR_GITHUB_USER",
+      "owner": "RWood-Code",
       "repo": "facilityos"
     }
   }
