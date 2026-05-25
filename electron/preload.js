@@ -39,6 +39,14 @@ contextBridge.exposeInMainWorld('facilityos', {
       return { ok: false, error: e.message };
     }
   },
+  onUpdateStatus: (callback) => {
+    const handler = (_, payload) => callback(payload);
+    ipcRenderer.on('update:status', handler);
+    return () => ipcRenderer.removeListener('update:status', handler);
+  },
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  setTitle: (title) => ipcRenderer.send('set-title', title),
 });
 
 contextBridge.exposeInMainWorld('appInfo', {

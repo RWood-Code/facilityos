@@ -7,6 +7,37 @@ import { PageHeader, Card, Btn, Field, Input, Select, TabBar, Spinner, Modal, St
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+function generateRecurDates(startDate, recurType, endDate) {
+  if (!recurType || recurType === 'none' || !endDate) return [startDate];
+  const dates = [];
+  const end = new Date(endDate);
+  end.setDate(end.getDate() + 1);
+  let current = new Date(startDate);
+  const startDay = current.getDay();
+
+  while (current < end && dates.length < 90) {
+    const dayOfWeek = current.getDay();
+    const dateStr = current.toISOString().slice(0, 10);
+
+    if (recurType === 'daily') {
+      dates.push(dateStr);
+      current.setDate(current.getDate() + 1);
+    } else if (recurType === 'weekly') {
+      if (dayOfWeek === startDay) dates.push(dateStr);
+      current.setDate(current.getDate() + 1);
+    } else if (recurType === 'fortnightly') {
+      dates.push(dateStr);
+      current.setDate(current.getDate() + 14);
+    } else if (recurType === 'weekdays') {
+      if (dayOfWeek >= 1 && dayOfWeek <= 5) dates.push(dateStr);
+      current.setDate(current.getDate() + 1);
+    } else {
+      break;
+    }
+  }
+  return dates.length ? dates : [startDate];
+}
+
 function weekRange(anchor) {
   const start = startOfWeek(anchor, { weekStartsOn: 1 });
   const end = addDays(start, 6);
@@ -35,8 +66,16 @@ export default function Rostering() {
   const [offers, setOffers] = useState([]);
   const [shiftModal, setShiftModal] = useState(null);
   const [bulkStaff, setBulkStaff] = useState('');
+  const [payrollModal, setPayrollModal] = useState(false);
+  const [payFrom, setPayFrom] = useState('');
+  const [payTo, setPayTo] = useState('');
 
   const week = useMemo(() => weekRange(anchor), [anchor]);
+
+  useEffect(() => {
+    setPayFrom(week.week_start);
+    setPayTo(week.week_end);
+  }, [week.week_start, week.week_end]);
 
   function load() {
     setLoading(true);
@@ -98,8 +137,18 @@ export default function Rostering() {
   }
 
   async function saveShift(form) {
-    if (form.id) await dbQuery('roster:shift_update', form);
-    else await dbQuery('roster:shift_create', form);
+    if (form.id) {
+      await dbQuery('roster:shift_update', form);
+      setShiftModal(null);
+      load();
+      return;
+    }
+    const dates = generateRecurDates(form.shift_date, form.recur_type, form.recur_end);
+    for (const date of dates) {
+      const { recur_type, recur_end, ...payload } = form;
+      await dbQuery('roster:shift_create', { ...payload, shift_date: date });
+    }
+    toast(`${dates.length} shift${dates.length > 1 ? 's' : ''} created`);
     setShiftModal(null);
     load();
   }
@@ -127,6 +176,7 @@ export default function Rostering() {
             <Btn variant="secondary" size="sm" onClick={() => setAnchor(new Date())}>Today</Btn>
             <Btn variant="secondary" size="sm" onClick={() => setAnchor(addWeeks(anchor, 1))}>Week →</Btn>
             <Btn variant="secondary" size="sm" onClick={exportRoster}>Export</Btn>
+            <Btn variant="secondary" size="sm" onClick={() => setPayrollModal(true)}>Payroll export</Btn>
             <Btn variant="secondary" size="sm" onClick={seedWeek}>Seed template</Btn>
             <Btn size="sm" onClick={publishWeek}>Publish week</Btn>
             <Btn size="sm" onClick={() => setShiftModal({ shift_date: week.week_start, start_time: '09:00', end_time: '17:00', status: 'draft', is_open: 1 })}>+ Shift</Btn>
@@ -304,6 +354,29 @@ export default function Rostering() {
           onMatch={(id) => dbQuery('roster:match_staff', { shift_id: id })}
         />
       )}
+
+      {payrollModal && (
+        <Modal title="Payroll export" onClose={() => setPayrollModal(false)}>
+          <Field label="Pay period from">
+            <Input type="date" value={payFrom} onChange={(e) => setPayFrom(e.target.value)} />
+          </Field>
+          <Field label="Pay period to">
+            <Input type="date" value={payTo} onChange={(e) => setPayTo(e.target.value)} />
+          </Field>
+          <p className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
+            Includes staff name, shift times, hours, pay rate, and estimated pay. Import into Xero, MYOB, or PaySauce.
+          </p>
+          <div className="flex justify-end gap-2 mt-4">
+            <Btn variant="secondary" onClick={() => setPayrollModal(false)}>Cancel</Btn>
+            <Btn onClick={async () => {
+              const r = await dbQuery('export:payroll', { week_start: payFrom, week_end: payTo });
+              downloadCsv(r);
+              setPayrollModal(false);
+              toast('Payroll CSV downloaded');
+            }}>Export payroll CSV</Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -345,6 +418,24 @@ function ShiftModal({ shift, locations, roles, staff, onClose, onSave, onAssign,
         </Select></Field>
         <Field label="Start"><Input type="time" value={form.start_time} onChange={(e) => set('start_time', e.target.value)} /></Field>
         <Field label="End"><Input type="time" value={form.end_time} onChange={(e) => set('end_time', e.target.value)} /></Field>
+        {!form.id && (
+          <>
+            <Field label="Repeat">
+              <Select value={form.recur_type || 'none'} onChange={(e) => set('recur_type', e.target.value)}>
+                <option value="none">Does not repeat</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly (same day)</option>
+                <option value="fortnightly">Fortnightly</option>
+                <option value="weekdays">Every weekday (Mon–Fri)</option>
+              </Select>
+            </Field>
+            {form.recur_type && form.recur_type !== 'none' && (
+              <Field label="Repeat until">
+                <Input type="date" value={form.recur_end || ''} min={form.shift_date} onChange={(e) => set('recur_end', e.target.value)} />
+              </Field>
+            )}
+          </>
+        )}
       </div>
       {matches.length > 0 && (
         <div className="mt-3 p-3 bg-cyan-50 rounded-lg text-sm">

@@ -7,18 +7,25 @@
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "dev:server": "node server/index.js",
     "dev:web": "concurrently -k \"npm run dev:server\" \"vite\"",
+    "dev:mobile": "concurrently -k \"npm run dev:server\" \"vite --host\"",
+    "serve:web": "npm run build && node server/index.js",
     "build": "vite build",
     "dist": "npm run build && electron-builder --win --x64",
     "dist:dir": "npm run build && electron-builder --win --x64 --dir",
     "server": "node server/index.js",
     "rebuild:node": "npm rebuild better-sqlite3",
     "rebuild:electron": "electron-builder install-app-deps",
-    "predist": "npm run rebuild:electron"
+    "predist": "npm run rebuild:electron",
+    "licence:generate": "node scripts/generate-licence.js",
+    "cloud:relay": "node cloud/relay/index.js",
+    "cloud:agent": "node cloud/agent/index.js",
+    "cloud:dev": "concurrently -k \"npm run dev:server\" \"npm run cloud:relay\" \"npm run cloud:agent\""
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "date-fns": "^3.6.0",
+    "electron-updater": "^6.8.3",
     "express": "^4.21.2",
     "lucide-react": "^0.383.0",
     "react": "^18.3.0",
@@ -41,7 +48,9 @@
   "build": {
     "appId": "nz.facility.facilityos",
     "productName": "FacilityOS",
-    "directories": { "output": "dist-electron" },
+    "directories": {
+      "output": "dist-electron"
+    },
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -53,7 +62,14 @@
       "node_modules/better-sqlite3/**/*"
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "signAndEditExecutable": false
     },
     "nsis": {
@@ -62,8 +78,15 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "FacilityOS",
-      "installerLanguages": ["en_US"],
+      "installerLanguages": [
+        "en_US"
+      ],
       "license": null
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "YOUR_GITHUB_USER",
+      "repo": "facilityos"
     }
   }
 }

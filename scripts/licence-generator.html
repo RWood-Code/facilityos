@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FacilityOS Licence Generator</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #111; background: #f8fafc; }
+    h1 { font-size: 1.25rem; }
+    label { display: block; font-size: 0.75rem; font-weight: 600; color: #64748b; margin-bottom: 0.25rem; }
+    input, select { width: 100%; padding: 0.5rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; margin-bottom: 0.75rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .modules { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem 1rem; background: #fff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem; margin: 1rem 0; }
+    .modules label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: #334155; font-weight: 500; margin: 0; cursor: pointer; }
+    button { background: #0891b2; color: #fff; border: none; padding: 0.6rem 1.2rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; margin-right: 0.5rem; }
+    button.secondary { background: #e2e8f0; color: #334155; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
+    .result { margin-top: 1.5rem; }
+    .key { font-family: monospace; font-size: 1.1rem; background: #ecfeff; border: 1px solid #a5f3fc; padding: 0.75rem; border-radius: 0.5rem; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>FacilityOS Licence Generator</h1>
+  <p style="color:#64748b;font-size:0.9rem">Offline vendor tool — generates keys matching the FacilityOS activation format.</p>
+
+  <div class="grid">
+    <div>
+      <label>Organisation</label>
+      <input id="org" placeholder="EA Networks Centre" />
+    </div>
+    <div>
+      <label>Site code (optional)</label>
+      <input id="site" placeholder="EANC" maxlength="8" />
+    </div>
+    <div>
+      <label>Plan</label>
+      <select id="plan">
+        <option value="trial">Trial</option>
+        <option value="standard">Standard</option>
+        <option value="professional" selected>Professional</option>
+        <option value="enterprise">Enterprise</option>
+      </select>
+    </div>
+    <div>
+      <label>Expiry date</label>
+      <input id="expiry" type="date" />
+    </div>
+    <div>
+      <label>Max terminals</label>
+      <input id="terminals" type="number" value="10" min="1" />
+    </div>
+  </div>
+
+  <label style="margin-top:0.5rem">Modules (customise or use plan defaults)</label>
+  <div class="modules" id="modules"></div>
+
+  <button type="button" onclick="generate()">Generate licence</button>
+  <button type="button" class="secondary" onclick="applyPlanDefaults()">Reset to plan defaults</button>
+
+  <div class="result" id="result" hidden>
+    <label>Licence key</label>
+    <div class="key" id="key"></div>
+    <p style="margin-top:1rem"><button type="button" class="secondary" onclick="copyKey()">Copy key</button>
+    <button type="button" class="secondary" onclick="copyJson()">Copy JSON</button></p>
+    <label style="margin-top:1rem">Package JSON</label>
+    <pre id="json"></pre>
+  </div>
+
+  <script>
+    const ALL_KEYS = ['pools','dosing','closures','steam','workorders','schedules','staff','assets','reports','rostering','manager_dashboard'];
+    const LABELS = {
+      pools:'Pool Management', dosing:'Dosing', closures:'Closures', steam:'Steam & Sauna',
+      workorders:'Work Orders', schedules:'Maintenance', staff:'Staff', assets:'Assets',
+      reports:'Reports', rostering:'Rostering', manager_dashboard:'Manager View'
+    };
+    const PLAN = {
+      trial: ['pools','dosing','closures','steam','workorders','schedules','staff','assets','reports'],
+      standard: ['pools','dosing','closures','steam','workorders','schedules','staff','assets','reports'],
+      professional: ['pools','dosing','closures','steam','workorders','schedules','staff','assets','reports','rostering','manager_dashboard'],
+      enterprise: ALL_KEYS
+    };
+    const PLAN_CODES = { trial:'TRIAL', standard:'STD', professional:'PRO', enterprise:'ENT' };
+
+    const expiry = document.getElementById('expiry');
+    const d = new Date(); d.setFullYear(d.getFullYear()+1);
+    expiry.value = d.toISOString().slice(0,10);
+
+    function planModules(plan) {
+      const set = new Set(PLAN[plan] || PLAN.standard);
+      const m = {}; ALL_KEYS.forEach(k => m[k] = set.has(k)); return m;
+    }
+
+    function renderModules(modules) {
+      const el = document.getElementById('modules');
+      el.innerHTML = ALL_KEYS.map(k => `
+        <label><input type="checkbox" data-mod="${k}" ${modules[k]?'checked':''} /> ${LABELS[k]}</label>
+      `).join('');
+    }
+
+    function getSelectedModules() {
+      const m = {}; ALL_KEYS.forEach(k => {
+        const cb = document.querySelector(`input[data-mod="${k}"]`);
+        m[k] = cb ? cb.checked : false;
+      }); return m;
+    }
+
+    function applyPlanDefaults() {
+      renderModules(planModules(document.getElementById('plan').value));
+    }
+
+    document.getElementById('plan').addEventListener('change', applyPlanDefaults);
+    applyPlanDefaults();
+
+    function slug(t) { return (t||'SITE').replace(/[^a-zA-Z0-9]/g,'').slice(0,8).toUpperCase()||'SITE'; }
+
+    function generateKey(org, site, plan) {
+      const suffix = Math.random().toString(36).slice(2,6).toUpperCase();
+      return `FACILITYOS-${PLAN_CODES[plan]||'STD'}-${slug(site||org)}-${new Date().getFullYear()}-${suffix}`;
+    }
+
+    let lastPkg = null;
+
+    function generate() {
+      const org = document.getElementById('org').value.trim();
+      if (!org) { alert('Organisation is required'); return; }
+      const plan = document.getElementById('plan').value;
+      const modules = getSelectedModules();
+      const pkg = {
+        licence_key: generateKey(org, document.getElementById('site').value, plan),
+        organisation: org,
+        plan,
+        expires_at: expiry.value,
+        max_terminals: Number(document.getElementById('terminals').value) || 10,
+        modules,
+        moduleList: ALL_KEYS.filter(k => modules[k])
+      };
+      lastPkg = pkg;
+      document.getElementById('result').hidden = false;
+      document.getElementById('key').textContent = pkg.licence_key;
+      document.getElementById('json').textContent = JSON.stringify(pkg, null, 2);
+    }
+
+    function copyKey() { navigator.clipboard.writeText(lastPkg.licence_key); }
+    function copyJson() { navigator.clipboard.writeText(JSON.stringify(lastPkg, null, 2)); }
+  </script>
+</body>
+</html>

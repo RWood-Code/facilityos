@@ -2,7 +2,7 @@ import React from 'react';
 
 export function Toasts({ toasts }) {
   return (
-    <div className="fixed bottom-5 right-5 flex flex-col gap-2 z-50 pointer-events-none">
+    <div className="fixed bottom-24 lg:bottom-5 right-4 lg:right-5 flex flex-col gap-2 z-50 pointer-events-none safe-area-bottom">
       {toasts.map(t => (
         <div key={t.id} className={"flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg text-sm border min-w-[240px] max-w-sm pointer-events-auto " +
           (t.type==='error' ? 'bg-red-50 border-red-200 text-red-800' : t.type==='warn' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800')}>

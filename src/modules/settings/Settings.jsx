@@ -6,10 +6,16 @@ import { MODULE_REGISTRY } from '../../config/modules';
 import { downloadCsv, parseCsv } from '../../utils/download';
 import { listBackups, createBackup, restoreBackup, checkIntegrity, formatBytes } from '../../utils/serverApi';
 import CustomLimitsEditor from '../../components/CustomLimitsEditor';
+import LicenceGenerator from '../../components/LicenceGenerator';
+import MobileAccessPanel from '../../components/MobileAccessPanel';
+import RemoteAccessPanel from '../../components/RemoteAccessPanel';
+import CloudConnectPanel from '../../components/CloudConnectPanel';
 import { limitsToForm, formToLimits } from '../../utils/poolUtils';
+import { isModuleLicensed, getModuleBlockReason } from '../../utils/moduleAccess';
+import { checkServerHealth } from '../../hooks/useDb';
 
 export default function Settings() {
-  const { toast, setSettings, settings } = useAppStore();
+  const { toast, setSettings, settings, licence: storeLicence, setLicence: setStoreLicence } = useAppStore();
   const [local, setLocal] = useState({});
   const [pools, setPools] = useState([]);
   const [tab, setTab] = useState('facility');
@@ -18,12 +24,13 @@ export default function Settings() {
   const [terminalConfig, setTerminalConfig] = useState(null);
   const [health, setHealth] = useState(null);
   const [licence, setLicence] = useState(null);
-  const [licForm, setLicForm] = useState({ key: '', expiry: '', days: '365' });
+  const [licForm, setLicForm] = useState({ key: '', expiry: '', days: '365', plan: 'professional' });
   const [backups, setBackups] = useState([]);
   const [integrity, setIntegrity] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
   const [backupBusy, setBackupBusy] = useState(false);
 
+  async function refreshBackups() {
     try {
       const data = await listBackups();
       setBackups(data || []);
@@ -59,6 +66,8 @@ export default function Settings() {
     if (window.facilityos) {
       window.facilityos.getConfig().then(setTerminalConfig);
       window.facilityos.checkHealth().then(setHealth);
+    } else {
+      checkServerHealth().then(setHealth);
     }
   }, []);
 
@@ -124,10 +133,17 @@ export default function Settings() {
     }
   }
 
-  const moduleToggles = MODULE_REGISTRY.filter((m) => m.settingKey && !m.alwaysOn).map((m) => [
-    m.settingKey,
-    m.label,
-  ]);
+  const moduleToggles = MODULE_REGISTRY.filter((m) => m.settingKey && !m.alwaysOn && !m.navHidden);
+
+  async function refreshLicence() {
+    const status = await dbQuery('licence:status');
+    setLicence(status);
+    setStoreLicence(status);
+    const s = await dbQuery('settings:all');
+    setLocal(s || {});
+    setSettings(s || {});
+    return status;
+  }
 
   return (
     <div>
@@ -143,6 +159,8 @@ export default function Settings() {
           { value: 'pools', label: 'Pools' },
           { value: 'modules', label: 'Modules' },
           { value: 'network', label: 'Terminals' },
+          { value: 'remote', label: 'Remote' },
+          { value: 'cloud', label: 'Cloud' },
           { value: 'stripe', label: 'Stripe' },
           { value: 'licence', label: 'Licence' },
           { value: 'data', label: 'Data' },
@@ -239,28 +257,40 @@ export default function Settings() {
       )}
 
       {tab === 'modules' && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 max-w-md">
-          <h3 className="text-sm font-semibold mb-4 text-gray-900">Module Visibility</h3>
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 max-w-lg">
+          <h3 className="text-sm font-semibold mb-2 text-gray-900">Module visibility</h3>
           <p className="text-xs text-gray-500 mb-4">
-            Toggle modules for this facility. New features are added in{' '}
-            <code className="text-xs bg-gray-100 px-1 rounded">src/config/modules.js</code>.
+            Your <strong>{storeLicence?.planLabel || storeLicence?.plan || 'licence'}</strong> plan controls which modules are available.
+            Toggle licensed modules on or off for this facility, then click Save Changes.
           </p>
-          {moduleToggles.map(([k, l]) => (
-            <div key={k} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
-              <span className="text-sm text-gray-700">{l}</span>
-              <button
-                onClick={() => set(k, local[k] === '0' ? '1' : '0')}
-                className={`w-10 h-6 rounded-full transition-colors relative ${
-                  local[k] !== '0' ? 'bg-cyan-600' : 'bg-gray-300'
-                }`}
-              >
-                <span
-                  className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform left-0.5"
-                  style={{ transform: local[k] !== '0' ? 'translateX(16px)' : 'none' }}
-                />
-              </button>
-            </div>
-          ))}
+          {moduleToggles.map((mod) => {
+            const licensed = isModuleLicensed(mod, storeLicence);
+            const enabled = local[mod.settingKey] !== '0';
+            return (
+              <div key={mod.settingKey} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0 gap-3">
+                <div className="min-w-0">
+                  <span className={`text-sm ${licensed ? 'text-gray-700' : 'text-gray-400'}`}>{mod.label}</span>
+                  {!licensed && (
+                    <div className="text-[10px] text-amber-600">{getModuleBlockReason(mod, local, storeLicence)}</div>
+                  )}
+                </div>
+                {licensed ? (
+                  <button
+                    type="button"
+                    onClick={() => set(mod.settingKey, enabled ? '0' : '1')}
+                    className={`w-10 h-6 rounded-full transition-colors relative flex-shrink-0 ${enabled ? 'bg-cyan-600' : 'bg-gray-300'}`}
+                  >
+                    <span
+                      className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform left-0.5"
+                      style={{ transform: enabled ? 'translateX(16px)' : 'none' }}
+                    />
+                  </button>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 flex-shrink-0">Locked</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -335,11 +365,27 @@ export default function Settings() {
               <li>Allow port {terminalConfig.serverPort || 3847} through Windows Firewall on the server PC.</li>
             </ol>
           </div>
+          <MobileAccessPanel />
         </div>
       )}
 
       {tab === 'network' && !terminalConfig && (
-        <p className="text-sm text-gray-500">Terminal settings are available in the installed desktop app.</p>
+        <div className="space-y-4 max-w-xl">
+          <p className="text-sm text-gray-500">Terminal role settings are available in the installed desktop app.</p>
+          <MobileAccessPanel />
+        </div>
+      )}
+
+      {tab === 'remote' && (
+        <div className="max-w-2xl">
+          <RemoteAccessPanel />
+        </div>
+      )}
+
+      {tab === 'cloud' && (
+        <div className="max-w-2xl">
+          <CloudConnectPanel />
+        </div>
       )}
 
       {tab === 'stripe' && (
@@ -377,26 +423,62 @@ export default function Settings() {
       )}
 
       {tab === 'licence' && licence && (
-        <div className="space-y-4 max-w-xl">
+        <div className="space-y-4 max-w-2xl">
+          <LicenceGenerator onApplied={async () => {
+            await refreshLicence();
+            toast('Licence applied — modules updated');
+          }} />
+
           <div className={`rounded-xl border p-5 ${licence.valid ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
             <h3 className="font-semibold text-gray-900">Subscription status</h3>
             <p className="text-sm mt-2">{licence.valid ? `Active — ${licence.daysRemaining} days remaining` : 'Expired or invalid'}</p>
-            <p className="text-xs text-gray-600 mt-1">Plan: {licence.plan} · Key: {licence.licence_key}</p>
+            <p className="text-xs text-gray-600 mt-1">Plan: {licence.planLabel || licence.plan} · Key: {licence.licence_key}</p>
             <p className="text-xs text-gray-600">Expires: {licence.expires_at?.slice(0, 10)} · Max terminals: {licence.max_terminals}</p>
           </div>
+
+          {licence.modules && (
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h3 className="text-sm font-semibold mb-3 text-gray-900">Licensed modules</h3>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(licence.modules).map(([key, on]) => (
+                  <span key={key} className={`text-xs px-2 py-1 rounded-full ${on ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-400 line-through'}`}>
+                    {key.replace('_', ' ')}
+                  </span>
+                ))}
+              </div>
+              <Btn variant="secondary" size="sm" className="mt-3" onClick={async () => {
+                await dbQuery('licence:sync_modules');
+                await refreshLicence();
+                toast('Module access synced from licence plan');
+              }}>Sync modules from plan</Btn>
+            </div>
+          )}
+
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="text-sm font-semibold mb-3">Renew / activate (administrator)</h3>
             <Field label="Licence key"><Input value={licForm.key} onChange={(e) => setLicForm((f) => ({ ...f, key: e.target.value }))} /></Field>
+            <Field label="Plan">
+              <Select value={licForm.plan} onChange={(e) => setLicForm((f) => ({ ...f, plan: e.target.value }))}>
+                <option value="trial">Trial</option>
+                <option value="standard">Standard</option>
+                <option value="professional">Professional</option>
+                <option value="enterprise">Enterprise</option>
+              </Select>
+            </Field>
             <Field label="Expiry date"><Input type="date" value={licForm.expiry} onChange={(e) => setLicForm((f) => ({ ...f, expiry: e.target.value }))} /></Field>
             <div className="flex gap-2 flex-wrap">
               <Btn onClick={async () => {
-                await dbQuery('licence:activate', { licence_key: licForm.key, expires_at: licForm.expiry });
-                dbQuery('licence:status').then(setLicence);
-                toast('Licence updated');
+                await dbQuery('licence:activate', {
+                  licence_key: licForm.key,
+                  expires_at: licForm.expiry,
+                  plan: licForm.plan,
+                });
+                await refreshLicence();
+                toast('Licence activated — modules updated for plan');
               }}>Activate</Btn>
               <Btn variant="secondary" onClick={async () => {
                 await dbQuery('licence:renew', { days: parseInt(licForm.days, 10) || 365 });
-                dbQuery('licence:status').then(setLicence);
+                await refreshLicence();
                 toast('Extended');
               }}>Extend {licForm.days} days</Btn>
             </div>

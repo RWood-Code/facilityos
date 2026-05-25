@@ -1,10 +1,44 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 dist-electron/
-*.db
-*.db-shm
-*.db-wal
+*.tsbuildinfo
+
+# Vite cache
+.vite/
+
+# Environment and secrets
 .env
-.env.local
-../facilityos-extract/
-../facilityos.7z
+.env.*
+!.env.example
+
+# Local / runtime data
+*.db
+*.sqlite
+*.sqlite3
+cloud/data/
+relay-store.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / coverage
+coverage/
+
+# Electron builder cache
+.cache/

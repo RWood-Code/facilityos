@@ -45,7 +45,17 @@ function runMigrations(db) {
 
   for (const migration of migrations) {
     if (migration.version <= current) continue;
-    db.exec(migration.sql);
+    const statements = migration.sql
+      .split(';')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const stmt of statements) {
+      try {
+        db.exec(stmt);
+      } catch (e) {
+        if (!/duplicate column name/i.test(e.message)) throw e;
+      }
+    }
     db.prepare('INSERT INTO schema_version (version, description) VALUES (?, ?)').run(
       migration.version,
       migration.description

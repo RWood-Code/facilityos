@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { dbQuery } from '../../hooks/useDb';
 import { useAppStore } from '../../store/appStore';
+import { MODULE_REGISTRY } from '../../config/modules';
+import { isModuleAccessible } from '../../utils/moduleAccess';
 import { StatCard, ComplianceBadge, Spinner, Btn } from '../../components/ui';
 import TestEntryModal from '../../components/TestEntryModal';
 import SteamCheckModal from '../../components/SteamCheckModal';
@@ -15,10 +17,11 @@ const MODULE_CARDS = [
   { key: 'show_maintenance', label: 'Schedules', desc: 'Scheduled maintenance', icon: '📅', mod: 'schedules', color: 'bg-teal-50 border-teal-200 text-teal-700' },
   { key: 'show_staff', label: 'Staff', desc: 'Staff & qualifications', icon: '👥', mod: 'staff', color: 'bg-pink-50 border-pink-200 text-pink-700' },
   { key: 'show_reports', label: 'Reports', desc: 'Analytics & compliance', icon: '📊', mod: 'reports', color: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+  { key: 'show_manager_dashboard', label: 'Manager View', desc: 'KPIs & alerts', icon: '📈', mod: 'managerdashboard', color: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
 ];
 
 export default function Dashboard() {
-  const { setModule, settings, toast, facility } = useAppStore();
+  const { setModule, settings, toast, facility, licence } = useAppStore();
   const [pools, setPools] = useState([]);
   const [latestTests, setLatestTests] = useState([]);
   const [workSummary, setWorkSummary] = useState({});
@@ -27,25 +30,32 @@ export default function Dashboard() {
   const [testModal, setTestModal] = useState(false);
   const [testPool, setTestPool] = useState(null);
   const [steamModal, setSteamModal] = useState(false);
+  const [todayTests, setTodayTests] = useState(0);
 
   useEffect(() => {
+    const today = format(new Date(), 'yyyy-MM-dd');
     Promise.all([
       dbQuery('pools:list', { facility_id: facility?.id }),
       dbQuery('tests:latest_per_pool', { facility_id: facility?.id }),
       dbQuery('reports:workorder_summary'),
       dbQuery('reports:overdue_schedules'),
+      dbQuery('tests:list', { from_date: today, limit: 500 }),
     ])
-      .then(([p, t, ws, od]) => {
+      .then(([p, t, ws, od, todayList]) => {
         setPools(p || []);
         setLatestTests(t || []);
         setWorkSummary(ws || {});
         setOverdue(od || []);
+        setTodayTests(todayList?.length || 0);
       })
       .catch(() => toast('Failed to load dashboard', 'error'))
       .finally(() => setLoading(false));
   }, []);
 
-  const isEnabled = (key) => settings[key] !== '0';
+  const isEnabled = (modId) => {
+    const mod = MODULE_REGISTRY.find((m) => m.id === modId);
+    return mod ? isModuleAccessible(mod, settings, licence) : false;
+  };
   const waterPools = pools.filter((p) => isWaterTestPool(p.type));
 
   const poolCompliance = waterPools.map((pool) => {
@@ -92,7 +102,22 @@ export default function Dashboard() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      {poolCompliance.filter((p) => p.compliant === false).length > 0 && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+          <div className="text-sm font-semibold text-red-800 mb-1">Non-compliant readings require action</div>
+          <div className="text-xs text-red-700 space-y-0.5">
+            {poolCompliance.filter((p) => p.compliant === false).map(({ pool, latest }) => (
+              <div key={pool.id}>
+                <strong>{pool.name}</strong> — tested {latest.test_time || latest.test_date}
+                {latest.tested_by ? ` by ${latest.tested_by}` : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <StatCard label="Tests today" value={todayTests} delta="recorded today" accent="cyan" />
         <StatCard label="Compliant (water)" value={`${compliantCount}/${waterPools.length}`} delta="pools & spas" accent="emerald" />
         <StatCard label="Non-compliant" value={nonCompliantCount} accent={nonCompliantCount > 0 ? 'red' : 'emerald'} />
         <StatCard label="Open work orders" value={openWOs} delta={urgentWOs > 0 ? `${urgentWOs} urgent` : '—'} accent={urgentWOs > 0 ? 'red' : 'cyan'} />
@@ -136,7 +161,7 @@ export default function Dashboard() {
             <h3 className="text-sm font-semibold text-gray-900">Modules</h3>
           </div>
           <div className="p-3 grid grid-cols-2 gap-2">
-            {MODULE_CARDS.filter((m) => isEnabled(m.key)).map((m) => (
+            {MODULE_CARDS.filter((m) => isEnabled(m.mod)).map((m) => (
               <button
                 key={m.mod}
                 type="button"

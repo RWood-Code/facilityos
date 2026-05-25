@@ -1,4 +1,17 @@
 const { writeAudit } = require('./audit');
+const {
+  resolveModuleAccess,
+  syncSettingsFromModules,
+  PLAN_ENTITLEMENTS,
+  PLAN_LABELS,
+  ALL_MODULE_KEYS,
+} = require('./entitlements');
+const {
+  buildLicencePackage,
+  MODULE_LABELS,
+  modulesFromPlan,
+  defaultExpiryDate,
+} = require('./licenceGenerator');
 
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -10,43 +23,105 @@ function registerExtendedHandlers(h) {
     return { id };
   });
 
-  h('licence:status', ({ get, all }) => {
+  h('licence:status', ({ get }) => {
     const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
-    if (!lic) return { valid: false, reason: 'no_licence', daysRemaining: 0 };
+    if (!lic) {
+      return { valid: false, reason: 'no_licence', daysRemaining: 0, modules: resolveModuleAccess('trial', null) };
+    }
     const expires = new Date(lic.expires_at);
     const now = new Date();
     const daysRemaining = Math.ceil((expires - now) / 86400000);
     const grace = parseInt((get(`SELECT value FROM setting WHERE key='licence_grace_days'`) || {}).value || '7', 10);
     const valid = daysRemaining >= -grace;
+    const modules = resolveModuleAccess(lic.plan, lic.features);
     return {
       valid,
       daysRemaining,
       graceDays: grace,
       plan: lic.plan,
+      planLabel: PLAN_LABELS[lic.plan] || lic.plan,
       organisation: lic.organisation,
       licence_key: lic.licence_key,
       expires_at: lic.expires_at,
       max_terminals: lic.max_terminals,
+      modules,
+      moduleList: ALL_MODULE_KEYS.filter((k) => modules[k]),
       reason: valid ? null : 'expired',
     };
   });
 
-  h('licence:activate', ({ run, get }, { licence_key, expires_at, organisation, plan, max_terminals }) => {
+  h('licence:plans', () => ({
+    plans: Object.entries(PLAN_LABELS).map(([id, label]) => ({ id, label, modules: PLAN_ENTITLEMENTS[id] || [] })),
+    moduleLabels: MODULE_LABELS,
+    allModules: ALL_MODULE_KEYS,
+  }));
+
+  h('licence:generate', (_db, args = {}) => buildLicencePackage({
+    organisation: args.organisation,
+    siteCode: args.site_code,
+    plan: args.plan || 'professional',
+    expires_at: args.expires_at || defaultExpiryDate(args.years || 1),
+    max_terminals: args.max_terminals || 10,
+    modules: args.modules,
+  }));
+
+  h('licence:plan_modules', (_db, { plan } = {}) => ({
+    plan: plan || 'standard',
+    modules: modulesFromPlan(plan || 'standard'),
+  }));
+
+  h('licence:set_features', ({ run, get }, { features }) => {
+    const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+    if (!lic) throw new Error('No active licence');
+    const featuresJson = JSON.stringify(features || {});
+    run(`UPDATE licence SET features=? WHERE id=?`, [featuresJson, lic.id]);
+    const modules = resolveModuleAccess(lic.plan, featuresJson);
+    syncSettingsFromModules(run, modules);
+    writeAudit({ run, get, all: () => [] }, {
+      action: 'licence.set_features',
+      entity_type: 'licence',
+      entity_id: lic.licence_key,
+      details: features,
+    });
+    return { modules };
+  });
+
+  h('licence:sync_modules', ({ run, get }) => {
+    const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+    if (!lic) return { ok: false };
+    const modules = resolveModuleAccess(lic.plan, lic.features);
+    syncSettingsFromModules(run, modules);
+    return { modules };
+  });
+
+  h('licence:activate', ({ run, get }, { licence_key, expires_at, organisation, plan, max_terminals, features, modules }) => {
+    const selectedPlan = plan || 'standard';
     const existing = get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
-    if (existing) {
-      run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
-        [expires_at, organisation || null, plan || 'standard', max_terminals || 10, licence_key]);
-    } else {
-      run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,is_active,last_validated) VALUES (?,?,?,?,?,?,1,datetime('now'))`,
-        [genId(), licence_key, organisation || null, plan || 'standard', expires_at, max_terminals || 10]);
+    let featuresJson = features ? (typeof features === 'string' ? features : JSON.stringify(features)) : null;
+    if (!featuresJson && modules && typeof modules === 'object') {
+      const { featuresFromModules } = require('./licenceGenerator');
+      const f = featuresFromModules(selectedPlan, modules);
+      featuresJson = f ? JSON.stringify(f) : null;
     }
+    const { normalizeModuleSelection } = require('./licenceGenerator');
+    const effectiveModules = modules && typeof modules === 'object'
+      ? normalizeModuleSelection(selectedPlan, modules)
+      : resolveModuleAccess(selectedPlan, featuresJson);
+    if (existing) {
+      run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, features=COALESCE(?, features), is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
+        [expires_at, organisation || null, selectedPlan, max_terminals || 10, featuresJson, licence_key]);
+    } else {
+      run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,features,is_active,last_validated) VALUES (?,?,?,?,?,?,?,1,datetime('now'))`,
+        [genId(), licence_key, organisation || null, selectedPlan, expires_at, max_terminals || 10, featuresJson]);
+    }
+    syncSettingsFromModules(run, effectiveModules);
     writeAudit({ run, get, all: () => [] }, {
       action: 'licence.activate',
       entity_type: 'licence',
       entity_id: licence_key,
-      details: { expires_at, organisation, plan },
+      details: { expires_at, organisation, plan: selectedPlan, modules: effectiveModules },
     });
-    return { ok: true };
+    return { ok: true, modules: effectiveModules };
   });
 
   h('licence:renew', ({ run }, { days, licence_key }) => {
@@ -110,6 +185,41 @@ function registerExtendedHandlers(h) {
     const lines = [headers.join(',')];
     rows.forEach((r) => lines.push(headers.map((k) => csvEscape(r[k])).join(',')));
     return { csv: lines.join('\n'), filename: `roster-${week_start}.csv`, count: rows.length };
+  });
+
+  const shiftHours = (start, end, breakMin = 0) => {
+    const [sh, sm] = (start || '0:0').split(':').map(Number);
+    const [eh, em] = (end || '0:0').split(':').map(Number);
+    return Math.max(0, (eh * 60 + em - sh * 60 - sm - breakMin) / 60);
+  };
+
+  h('export:payroll', ({ all }, { week_start, week_end } = {}) => {
+    const rows = all(`
+      SELECT rs.shift_date, rs.start_time, rs.end_time,
+        rl.name as location, rr.name as role,
+        s.first_name||' '||s.last_name as staff_name, s.role as staff_role,
+        ra.pay_rate, ra.pay_type, ra.status
+      FROM roster_shift rs
+      LEFT JOIN roster_location rl ON rl.id=rs.location_id
+      LEFT JOIN roster_role rr ON rr.id=rs.role_id
+      LEFT JOIN roster_assignment ra ON ra.shift_id=rs.id AND ra.status!='cancelled'
+      LEFT JOIN staff s ON s.id=ra.staff_id
+      WHERE rs.shift_date>=? AND rs.shift_date<=?
+      ORDER BY rs.shift_date, rs.start_time, staff_name
+    `, [week_start, week_end]);
+    const headers = ['shift_date', 'start_time', 'end_time', 'location', 'role', 'staff_name', 'staff_role', 'hours_scheduled', 'pay_rate', 'pay_type', 'estimated_pay', 'status'];
+    const lines = [headers.join(',')];
+    rows.forEach((r) => {
+      const hours = shiftHours(r.start_time, r.end_time);
+      const rate = r.pay_rate || 0;
+      const enriched = {
+        ...r,
+        hours_scheduled: hours.toFixed(2),
+        estimated_pay: (hours * rate).toFixed(2),
+      };
+      lines.push(headers.map((k) => csvEscape(enriched[k])).join(','));
+    });
+    return { csv: lines.join('\n'), filename: `payroll-${week_start}-to-${week_end}.csv`, count: rows.length };
   });
 
   h('import:staff', ({ run, get }, { rows }) => {
@@ -355,6 +465,173 @@ function registerExtendedHandlers(h) {
     sql += ` ORDER BY created_at DESC LIMIT ?`;
     p.push(limit || 100);
     return all(sql, p);
+  });
+
+  h('remote:status', ({ get }) => {
+    const { readRemoteSettings } = require('./remoteAccess');
+    const { enabled, token } = readRemoteSettings(get);
+    return {
+      enabled,
+      hasToken: !!token,
+      tokenPreview: token ? token.slice(-6) : null,
+    };
+  });
+
+  h('remote:enable', ({ run, get }) => {
+    const { generateRemoteToken } = require('./remoteAccess');
+    const token = generateRemoteToken();
+    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_enabled', '1')`);
+    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_token', ?)`, [token]);
+    writeAudit({ run, get, all: () => [] }, {
+      action: 'remote.enable',
+      entity_type: 'setting',
+      entity_id: 'remote_access',
+    });
+    return { enabled: true, token };
+  });
+
+  h('remote:disable', ({ run, get }) => {
+    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_enabled', '0')`);
+    writeAudit({ run, get, all: () => [] }, {
+      action: 'remote.disable',
+      entity_type: 'setting',
+      entity_id: 'remote_access',
+    });
+    return { enabled: false };
+  });
+
+  h('remote:rotate_token', ({ run, get }) => {
+    const { generateRemoteToken } = require('./remoteAccess');
+    const token = generateRemoteToken();
+    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_token', ?)`, [token]);
+    writeAudit({ run, get, all: () => [] }, {
+      action: 'remote.rotate_token',
+      entity_type: 'setting',
+      entity_id: 'remote_access',
+    });
+    return { token };
+  });
+
+  h('cloud:status', ({ get, all }) => {
+    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    const pending = all(`SELECT COUNT(*) AS n FROM cloud_sync_outbox WHERE synced_at IS NULL`)[0]?.n || 0;
+    const siteId = g('cloud_site_id');
+    return {
+      enabled: g('cloud_enabled') === '1',
+      paired: !!siteId,
+      site_id: siteId || null,
+      relay_url: g('cloud_relay_url') || 'https://relay.facilityos.nz',
+      last_sync_at: g('cloud_last_sync_at') || null,
+      pairing_code: g('cloud_pairing_code') || null,
+      pending_events: pending,
+      agent_available: false,
+      protocol_version: require('../cloud/syncProtocol').SYNC_PROTOCOL_VERSION,
+    };
+  });
+
+  h('cloud:configure', ({ run }, { relay_url, enabled } = {}) => {
+    if (relay_url) run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_relay_url', ?)`, [relay_url]);
+    if (enabled != null) run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_enabled', ?)`, [enabled ? '1' : '0']);
+    return { ok: true };
+  });
+
+  h('cloud:pairing_code', ({ run }) => {
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_pairing_code', ?)`, [code]);
+    return { code, expires_minutes: 30 };
+  });
+
+  h('cloud:sync_now', ({ run, get, all }) => {
+    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    const pending = all(`
+      SELECT * FROM cloud_sync_outbox WHERE synced_at IS NULL ORDER BY updated_at ASC LIMIT 50
+    `);
+    const { syncPendingOutbox } = require('../cloud/syncRunner');
+
+    return syncPendingOutbox({
+      relayUrl: g('cloud_relay_url') || 'http://127.0.0.1:4850',
+      siteId: g('cloud_site_id'),
+      agentKey: g('cloud_agent_key'),
+      pendingRows: pending,
+      markSynced: (ids) => {
+        ids.forEach((id) => {
+          run(`UPDATE cloud_sync_outbox SET synced_at=datetime('now'), sync_error=NULL WHERE id=?`, [id]);
+        });
+        run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_last_sync_at', datetime('now'))`);
+      },
+      markError: (ids, message) => {
+        ids.forEach((id) => {
+          run(`UPDATE cloud_sync_outbox SET sync_error=? WHERE id=?`, [message, id]);
+        });
+      },
+    }).then((result) => ({ ...result, pending_events: pending.length }));
+  });
+
+  h('cloud:pair', ({ run, get, all }, { facility_name } = {}) => {
+    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    const code = g('cloud_pairing_code');
+    if (!code) throw new Error('generate_pairing_code_first');
+    const relayUrl = g('cloud_relay_url') || 'http://127.0.0.1:4850';
+    const { pairWithRelay } = require('../cloud/relayClient');
+    return pairWithRelay({
+      relayUrl,
+      code,
+      facilityName: facility_name || g('facility_name') || 'FacilityOS Site',
+    }).then((response) => {
+      const { site_id, agent_key } = response.data || {};
+      if (!site_id || !agent_key) throw new Error('pair_failed');
+      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_site_id', ?)`, [site_id]);
+      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_agent_key', ?)`, [agent_key]);
+      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_enabled', '1')`);
+      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_pairing_code', '')`);
+      writeAudit({ run, get, all: () => [] }, {
+        action: 'cloud.pair',
+        entity_type: 'cloud',
+        entity_id: site_id,
+      });
+      return { site_id, agent_key, relay_url: relayUrl };
+    });
+  });
+
+  h('cloud:agent_credentials', ({ get }) => {
+    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    return {
+      enabled: g('cloud_enabled') === '1',
+      site_id: g('cloud_site_id') || null,
+      agent_key: g('cloud_agent_key') || null,
+      relay_url: g('cloud_relay_url') || 'http://127.0.0.1:4850',
+    };
+  });
+
+  h('cloud:outbox_pending', ({ all }, { limit } = {}) => all(`
+    SELECT * FROM cloud_sync_outbox WHERE synced_at IS NULL
+    ORDER BY updated_at ASC LIMIT ?
+  `, [limit || 50]));
+
+  h('cloud:outbox_ack', ({ run }, { ids } = {}) => {
+    (ids || []).forEach((id) => {
+      run(`UPDATE cloud_sync_outbox SET synced_at=datetime('now'), sync_error=NULL WHERE id=?`, [id]);
+    });
+    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_last_sync_at', datetime('now'))`);
+    return { acked: (ids || []).length };
+  });
+
+  h('cloud:outbox_error', ({ run }, { ids, message } = {}) => {
+    (ids || []).forEach((id) => {
+      run(`UPDATE cloud_sync_outbox SET sync_error=? WHERE id=?`, [message || 'sync_failed', id]);
+    });
+    return { ok: true };
+  });
+
+  h('cloud:enqueue_demo', ({ run, get }) => {
+    const { enqueueOutbox } = require('../cloud/outbox');
+    const id = enqueueOutbox(run, {
+      entity_type: 'audit_event',
+      entity_id: `demo-${Date.now()}`,
+      op: 'create',
+      payload: { message: 'FacilityOS Cloud demo event', at: new Date().toISOString() },
+    });
+    return { id };
   });
 }
 

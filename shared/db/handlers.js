@@ -70,6 +70,13 @@ function registerHandlers(h) {
       actor: d.tested_by || null,
       details: { pool_id: d.pool_id, test_date: d.test_date, is_compliant: d.is_compliant },
     });
+    const { enqueueIfCloudEnabled } = require('../cloud/outbox');
+    enqueueIfCloudEnabled({ run, get }, {
+      entity_type: 'water_test',
+      entity_id: id,
+      op: 'create',
+      payload: { pool_id: d.pool_id, test_date: d.test_date, is_compliant: d.is_compliant },
+    });
     return { id };
   });
 
@@ -204,10 +211,17 @@ function registerHandlers(h) {
     p.push(limit || 100);
     return all(sql, p);
   });
-  h('steamchecks:create', ({ run }, d) => {
+  h('steamchecks:create', ({ run, get }, d) => {
     const id = genId();
     run(`INSERT INTO steam_room_check (id,pool_id,check_date,check_time,checked_by,temperature,humidity,patron_count,is_clean,towels_stocked,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [id, d.pool_id, d.check_date, d.check_time || null, d.checked_by || null, d.temperature ?? null, d.humidity ?? null, d.patron_count ?? null, d.is_clean ? 1 : 0, d.towels_stocked ? 1 : 0, d.notes || null]);
+    const { enqueueIfCloudEnabled } = require('../cloud/outbox');
+    enqueueIfCloudEnabled({ run, get }, {
+      entity_type: 'steam_check',
+      entity_id: id,
+      op: 'create',
+      payload: { pool_id: d.pool_id, check_date: d.check_date },
+    });
     return { id };
   });
 
@@ -219,6 +233,8 @@ function registerHandlers(h) {
         COUNT(tr.id) as test_count,
         SUM(CASE WHEN tr.is_compliant=1 THEN 1 ELSE 0 END) as compliant_count,
         SUM(CASE WHEN tr.is_compliant=0 THEN 1 ELSE 0 END) as non_compliant_count,
+        ROUND(AVG(tr.free_chlorine), 2) as avg_fac,
+        ROUND(AVG(tr.ph), 2) as avg_ph,
         MAX(tr.test_date) as last_tested
       FROM pool p
       LEFT JOIN test_result tr ON tr.pool_id=p.id AND tr.test_date>=? AND tr.test_type='routine'

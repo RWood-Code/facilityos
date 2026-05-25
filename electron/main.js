@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { loadConfig, saveConfig, DEFAULT_PORT } = require('./config');
 const { startEmbeddedServer, stopEmbeddedServer, waitForHealth } = require('./server-manager');
+const { initAutoUpdater, downloadUpdate, installUpdate } = require('./updater');
 
 const isDev = !app.isPackaged;
 let mainWindow;
@@ -53,6 +54,7 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     if (isDev) mainWindow.webContents.openDevTools({ mode: 'detach' });
+    else initAutoUpdater(mainWindow);
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
@@ -77,6 +79,13 @@ function registerIpc() {
   ipcMain.handle('system:restart-server', async () => {
     stopEmbeddedServer();
     return ensureDataServer();
+  });
+  ipcMain.handle('update:download', () => downloadUpdate());
+  ipcMain.handle('update:install', () => installUpdate());
+  ipcMain.on('set-title', (_, title) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setTitle(title ? `FacilityOS — ${title}` : 'FacilityOS');
+    }
   });
 }
 

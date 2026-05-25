@@ -49,7 +49,30 @@ export default function SteamRoom() {
         {checks.length === 0 ? (
           <Empty icon="♨️" title="No checks yet" desc="Log steam room or sauna checks — not spa pools" />
         ) : (
-          <table className="w-full text-sm">
+          <>
+            <div className="md:hidden space-y-2">
+              {checks.map((c) => {
+                const p = pools.find((x) => x.id === c.pool_id);
+                const meta = getPoolTypeMeta(p?.type);
+                return (
+                  <div key={c.id} className="rounded-xl border border-gray-100 p-3 bg-gray-50/80">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-sm">{meta.icon} {p?.name || c.pool_id}</span>
+                      <span className="text-xs text-gray-500 font-mono">{c.check_date}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-3 mt-2 text-xs text-gray-600">
+                      <span>{c.check_time}</span>
+                      <span>{c.checked_by || '—'}</span>
+                      <span>{c.temperature ?? '—'}°C</span>
+                      <span>Clean {c.is_clean ? '✓' : '✗'}</span>
+                      <span>Towels {c.towels_stocked ? '✓' : '✗'}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm min-w-[520px]">
             <thead>
               <tr className="text-xs text-gray-500 uppercase border-b">
                 <th className="text-left py-2 px-3">Date</th>
@@ -77,6 +100,8 @@ export default function SteamRoom() {
               })}
             </tbody>
           </table>
+            </div>
+          </>
         )}
       </Card>
 

@@ -86,7 +86,7 @@ function LimitsModal({ pool, onClose, onSaved }) {
 }
 
 export default function Pools() {
-  const { toast } = useAppStore();
+  const { toast, setSelectedPoolId, setModule } = useAppStore();
   const [pools, setPools] = useState([]);
   const [latestTests, setLatestTests] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -137,7 +137,12 @@ export default function Pools() {
                   <div className="flex items-center gap-3">
                     <span className="text-2xl">{meta.icon}</span>
                     <div>
-                      <div className="font-semibold text-gray-900">{pool.name}</div>
+                      <div
+                        className="font-semibold text-gray-900 cursor-pointer hover:text-cyan-600 transition-colors"
+                        onClick={() => { setSelectedPoolId(pool.id); setModule('poolhistory'); }}
+                      >
+                        {pool.name}
+                      </div>
                       <div className="text-xs text-gray-400">
                         {meta.label}
                         {pool.volume_litres ? ` · ${(pool.volume_litres / 1000).toFixed(0)} kL` : ''}
