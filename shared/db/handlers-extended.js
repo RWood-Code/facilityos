@@ -1,0 +1,361 @@
+const { writeAudit } = require('./audit');
+
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function registerExtendedHandlers(h) {
+  h('closures:reopen', ({ run }, { id, reopened_by }) => {
+    run(`UPDATE pool_closure SET reopened_at=datetime('now'), reopened_by=? WHERE id=?`, [reopened_by || null, id]);
+    return { id };
+  });
+
+  h('licence:status', ({ get, all }) => {
+    const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+    if (!lic) return { valid: false, reason: 'no_licence', daysRemaining: 0 };
+    const expires = new Date(lic.expires_at);
+    const now = new Date();
+    const daysRemaining = Math.ceil((expires - now) / 86400000);
+    const grace = parseInt((get(`SELECT value FROM setting WHERE key='licence_grace_days'`) || {}).value || '7', 10);
+    const valid = daysRemaining >= -grace;
+    return {
+      valid,
+      daysRemaining,
+      graceDays: grace,
+      plan: lic.plan,
+      organisation: lic.organisation,
+      licence_key: lic.licence_key,
+      expires_at: lic.expires_at,
+      max_terminals: lic.max_terminals,
+      reason: valid ? null : 'expired',
+    };
+  });
+
+  h('licence:activate', ({ run, get }, { licence_key, expires_at, organisation, plan, max_terminals }) => {
+    const existing = get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
+    if (existing) {
+      run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
+        [expires_at, organisation || null, plan || 'standard', max_terminals || 10, licence_key]);
+    } else {
+      run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,is_active,last_validated) VALUES (?,?,?,?,?,?,1,datetime('now'))`,
+        [genId(), licence_key, organisation || null, plan || 'standard', expires_at, max_terminals || 10]);
+    }
+    writeAudit({ run, get, all: () => [] }, {
+      action: 'licence.activate',
+      entity_type: 'licence',
+      entity_id: licence_key,
+      details: { expires_at, organisation, plan },
+    });
+    return { ok: true };
+  });
+
+  h('licence:renew', ({ run }, { days, licence_key }) => {
+    const d = days || 365;
+    if (licence_key) {
+      run(`UPDATE licence SET expires_at=datetime(expires_at, '+'||?||' days'), last_validated=datetime('now') WHERE licence_key=?`, [d, licence_key]);
+    } else {
+      run(`UPDATE licence SET expires_at=datetime(expires_at, '+'||?||' days'), last_validated=datetime('now') WHERE is_active=1`, [d]);
+    }
+    return { ok: true };
+  });
+
+  h('saved_reports:list', ({ all }) => all(`SELECT * FROM saved_report ORDER BY created_at DESC`));
+  h('saved_reports:create', ({ run }, d) => {
+    const id = genId();
+    run(`INSERT INTO saved_report (id,name,report_type,config) VALUES (?,?,?,?)`,
+      [id, d.name, d.report_type, JSON.stringify(d.config || {})]);
+    return { id };
+  });
+  h('saved_reports:delete', ({ run }, id) => { run(`DELETE FROM saved_report WHERE id=?`, [id]); return { id }; });
+
+  const csvEscape = (v) => {
+    const s = v == null ? '' : String(v);
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  h('export:tests', ({ all }, { from_date, pool_id } = {}) => {
+    let sql = `SELECT tr.*, p.name as pool_name FROM test_result tr JOIN pool p ON p.id=tr.pool_id WHERE 1=1`;
+    const p = [];
+    if (pool_id) { sql += ` AND tr.pool_id=?`; p.push(pool_id); }
+    if (from_date) { sql += ` AND tr.test_date>=?`; p.push(from_date); }
+    sql += ` ORDER BY tr.test_date DESC, tr.test_time DESC`;
+    const rows = all(sql, p);
+    const headers = ['pool_name', 'test_date', 'test_time', 'tested_by', 'ph', 'free_chlorine', 'total_available_chlorine', 'combined_chlorine', 'temperature', 'is_compliant', 'notes'];
+    const lines = [headers.join(',')];
+    rows.forEach((r) => lines.push(headers.map((k) => csvEscape(r[k])).join(',')));
+    return { csv: lines.join('\n'), filename: `water-tests-${new Date().toISOString().slice(0, 10)}.csv`, count: rows.length };
+  });
+
+  h('export:staff', ({ all }) => {
+    const rows = all(`SELECT first_name,last_name,email,phone,role,status,nzrrp_number,nzrrp_expiry FROM staff WHERE status='active' ORDER BY last_name`);
+    const headers = Object.keys(rows[0] || { first_name: '', last_name: '', email: '', phone: '', role: '', status: '' });
+    const lines = [headers.join(',')];
+    rows.forEach((r) => lines.push(headers.map((k) => csvEscape(r[k])).join(',')));
+    return { csv: lines.join('\n'), filename: 'staff-export.csv', count: rows.length };
+  });
+
+  h('export:roster', ({ all }, { week_start, week_end } = {}) => {
+    const rows = all(`
+      SELECT rs.shift_date, rs.start_time, rs.end_time, rl.name as location, rr.name as role,
+        s.first_name||' '||s.last_name as staff_name, rs.status, rs.is_open
+      FROM roster_shift rs
+      LEFT JOIN roster_location rl ON rl.id=rs.location_id
+      LEFT JOIN roster_role rr ON rr.id=rs.role_id
+      LEFT JOIN roster_assignment ra ON ra.shift_id=rs.id AND ra.status!='cancelled'
+      LEFT JOIN staff s ON s.id=ra.staff_id
+      WHERE rs.shift_date>=? AND rs.shift_date<=?
+      ORDER BY rs.shift_date, rs.start_time
+    `, [week_start, week_end]);
+    const headers = ['shift_date', 'start_time', 'end_time', 'location', 'role', 'staff_name', 'status', 'is_open'];
+    const lines = [headers.join(',')];
+    rows.forEach((r) => lines.push(headers.map((k) => csvEscape(r[k])).join(',')));
+    return { csv: lines.join('\n'), filename: `roster-${week_start}.csv`, count: rows.length };
+  });
+
+  h('import:staff', ({ run, get }, { rows }) => {
+    let imported = 0;
+    (rows || []).forEach((r) => {
+      if (!r.first_name || !r.last_name) return;
+      const id = genId();
+      run(`INSERT INTO staff (id,facility_id,first_name,last_name,email,phone,role,status) VALUES (?,?,?,?,?,?,?,?)`,
+        [id, 'fac1', r.first_name, r.last_name, r.email || null, r.phone || null, r.role || 'lifeguard', r.status || 'active']);
+      imported++;
+    });
+    return { imported };
+  });
+
+  // ── Roster locations & roles ──
+  h('roster:locations', ({ all }, { facility_id } = {}) => {
+    let sql = `SELECT * FROM roster_location WHERE is_active=1`;
+    const p = [];
+    if (facility_id) { sql += ` AND facility_id=?`; p.push(facility_id); }
+    return all(sql + ` ORDER BY sort_order,name`, p);
+  });
+  h('roster:roles', ({ all }, { facility_id } = {}) => {
+    let sql = `SELECT * FROM roster_role WHERE is_active=1`;
+    const p = [];
+    if (facility_id) { sql += ` AND facility_id=?`; p.push(facility_id); }
+    return all(sql + ` ORDER BY name`, p);
+  });
+
+  h('roster:shifts', ({ all }, { week_start, week_end, facility_id } = {}) => all(`
+    SELECT rs.*, rl.name as location_name, rr.name as role_name, rr.color as role_color
+    FROM roster_shift rs
+    LEFT JOIN roster_location rl ON rl.id=rs.location_id
+    LEFT JOIN roster_role rr ON rr.id=rs.role_id
+    WHERE rs.shift_date>=? AND rs.shift_date<=?
+    ${facility_id ? 'AND rs.facility_id=?' : ''}
+    ORDER BY rs.shift_date, rs.start_time
+  `, facility_id ? [week_start, week_end, facility_id] : [week_start, week_end]));
+
+  h('roster:assignments', ({ all }, { week_start, week_end } = {}) => all(`
+    SELECT ra.*, rs.shift_date, rs.start_time, rs.end_time, rs.location_id, rs.role_id, rs.is_open,
+      s.first_name, s.last_name, s.role as staff_role
+    FROM roster_assignment ra
+    JOIN roster_shift rs ON rs.id=ra.shift_id
+    JOIN staff s ON s.id=ra.staff_id
+    WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'
+  `, [week_start, week_end]));
+
+  h('roster:shift_create', ({ run }, d) => {
+    const id = genId();
+    run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, d.facility_id || 'fac1', d.location_id, d.role_id, d.shift_date, d.start_time, d.end_time,
+        d.break_minutes || 0, d.notes || null, d.status || 'draft', d.is_open ? 1 : 0]);
+    return { id };
+  });
+
+  h('roster:shift_update', ({ run }, { id, ...d }) => {
+    const sets = Object.keys(d).map((k) => `${k}=?`).join(',');
+    run(`UPDATE roster_shift SET ${sets} WHERE id=?`, [...Object.values(d), id]);
+    return { id };
+  });
+
+  h('roster:shift_delete', ({ run }, id) => {
+    run(`DELETE FROM roster_assignment WHERE shift_id=?`, [id]);
+    run(`DELETE FROM roster_shift WHERE id=?`, [id]);
+    return { id };
+  });
+
+  h('roster:assign', ({ run, get }, { shift_id, staff_id }) => {
+    const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
+    if (!shift) return { error: 'Shift not found' };
+    const existing = get(`SELECT id FROM roster_assignment WHERE shift_id=? AND staff_id=? AND status!='cancelled'`, [shift_id, staff_id]);
+    if (existing) return { id: existing.id };
+    const id = genId();
+    run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status) VALUES (?,?,?,'assigned')`, [id, shift_id, staff_id]);
+    run(`UPDATE roster_shift SET is_open=0 WHERE id=?`, [shift_id]);
+    return { id };
+  });
+
+  h('roster:unassign', ({ run }, { assignment_id, shift_id }) => {
+    if (assignment_id) run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [assignment_id]);
+    if (shift_id) run(`UPDATE roster_shift SET is_open=1 WHERE id=?`, [shift_id]);
+    return { ok: true };
+  });
+
+  h('roster:publish_week', ({ run }, { week_start, week_end }) => {
+    run(`UPDATE roster_shift SET status='published' WHERE shift_date>=? AND shift_date<=? AND status='draft'`, [week_start, week_end]);
+    return { ok: true };
+  });
+
+  h('roster:bulk_assign', ({ run, all }, { shift_ids, staff_id }) => {
+    const results = [];
+    (shift_ids || []).forEach((shift_id) => {
+      const id = genId();
+      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status) VALUES (?,?,?,'assigned')`, [id, shift_id, staff_id]);
+      run(`UPDATE roster_shift SET is_open=0 WHERE id=?`, [shift_id]);
+      results.push(id);
+    });
+    return { assigned: results.length };
+  });
+
+  h('roster:open_shifts', ({ all }, { week_start, week_end } = {}) => all(`
+    SELECT rs.*, rl.name as location_name, rr.name as role_name
+    FROM roster_shift rs
+    LEFT JOIN roster_location rl ON rl.id=rs.location_id
+    LEFT JOIN roster_role rr ON rr.id=rs.role_id
+    WHERE rs.shift_date>=? AND rs.shift_date<=? AND (rs.is_open=1 OR rs.id NOT IN (
+      SELECT shift_id FROM roster_assignment WHERE status!='cancelled'))
+    ORDER BY rs.shift_date, rs.start_time
+  `, [week_start, week_end]));
+
+  h('roster:unavailability', ({ all }, { staff_id } = {}) => {
+    let sql = `SELECT ru.*, s.first_name, s.last_name FROM roster_unavailability ru JOIN staff s ON s.id=ru.staff_id WHERE 1=1`;
+    const p = [];
+    if (staff_id) { sql += ` AND ru.staff_id=?`; p.push(staff_id); }
+    return all(sql + ` ORDER BY ru.start_date DESC`, p);
+  });
+
+  h('roster:unavailability_create', ({ run }, d) => {
+    const id = genId();
+    run(`INSERT INTO roster_unavailability (id,staff_id,start_date,end_date,reason,all_day,start_time,end_time) VALUES (?,?,?,?,?,?,?,?)`,
+      [id, d.staff_id, d.start_date, d.end_date, d.reason || null, d.all_day ? 1 : 0, d.start_time || null, d.end_time || null]);
+    return { id };
+  });
+
+  h('roster:leave_list', ({ all }, { status } = {}) => {
+    let sql = `SELECT rl.*, s.first_name, s.last_name FROM roster_leave rl JOIN staff s ON s.id=rl.staff_id WHERE 1=1`;
+    const p = [];
+    if (status) { sql += ` AND rl.status=?`; p.push(status); }
+    return all(sql + ` ORDER BY rl.created_at DESC`, p);
+  });
+
+  h('roster:leave_create', ({ run }, d) => {
+    const id = genId();
+    run(`INSERT INTO roster_leave (id,staff_id,leave_type,start_date,end_date,hours,status,notes) VALUES (?,?,?,?,?,?,?,?)`,
+      [id, d.staff_id, d.leave_type || 'annual', d.start_date, d.end_date, d.hours || null, 'pending', d.notes || null]);
+    return { id };
+  });
+
+  h('roster:leave_review', ({ run }, { id, status, reviewed_by }) => {
+    run(`UPDATE roster_leave SET status=?, reviewed_by=? WHERE id=?`, [status, reviewed_by || null, id]);
+    return { id };
+  });
+
+  h('roster:offer_create', ({ run }, d) => {
+    const id = genId();
+    run(`INSERT INTO roster_shift_offer (id,shift_id,from_staff_id,to_staff_id,status,message) VALUES (?,?,?,?,?,?)`,
+      [id, d.shift_id, d.from_staff_id, d.to_staff_id, 'pending', d.message || null]);
+    return { id };
+  });
+
+  h('roster:offers', ({ all }, { status } = {}) => {
+    let sql = `
+      SELECT o.*, rs.shift_date, rs.start_time, rs.end_time,
+        fs.first_name as from_first, fs.last_name as from_last,
+        ts.first_name as to_first, ts.last_name as to_last
+      FROM roster_shift_offer o
+      JOIN roster_shift rs ON rs.id=o.shift_id
+      LEFT JOIN staff fs ON fs.id=o.from_staff_id
+      LEFT JOIN staff ts ON ts.id=o.to_staff_id WHERE 1=1`;
+    const p = [];
+    if (status) { sql += ` AND o.status=?`; p.push(status); }
+    return all(sql + ` ORDER BY o.created_at DESC`, p);
+  });
+
+  h('roster:offer_respond', ({ run, get }, { id, accept }) => {
+    const offer = get(`SELECT * FROM roster_shift_offer WHERE id=?`, [id]);
+    if (!offer) return { error: 'Not found' };
+    run(`UPDATE roster_shift_offer SET status=? WHERE id=?`, [accept ? 'accepted' : 'declined', id]);
+    if (accept) {
+      run(`UPDATE roster_assignment SET status='cancelled' WHERE shift_id=? AND staff_id=?`, [offer.shift_id, offer.from_staff_id]);
+      const aid = genId();
+      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status) VALUES (?,?,?,'assigned')`, [aid, offer.shift_id, offer.to_staff_id]);
+    }
+    return { ok: true };
+  });
+
+  h('roster:match_staff', ({ all, get }, { shift_id }) => {
+    const shift = get(`
+      SELECT rs.*, rr.staff_role FROM roster_shift rs
+      LEFT JOIN roster_role rr ON rr.id=rs.role_id WHERE rs.id=?`, [shift_id]);
+    if (!shift) return [];
+    const staff = all(`SELECT * FROM staff WHERE status='active' AND facility_id=?`, [shift.facility_id || 'fac1']);
+    const unavailable = all(`
+      SELECT staff_id FROM roster_unavailability
+      WHERE start_date<=? AND end_date>=?`, [shift.shift_date, shift.shift_date]);
+    const unavailIds = new Set(unavailable.map((u) => u.staff_id));
+    const onLeave = all(`
+      SELECT staff_id FROM roster_leave WHERE status='approved'
+      AND start_date<=? AND end_date>=?`, [shift.shift_date, shift.shift_date]);
+    onLeave.forEach((l) => unavailIds.add(l.staff_id));
+    return staff
+      .filter((s) => !unavailIds.has(s.id))
+      .map((s) => ({
+        ...s,
+        matchScore: shift.staff_role && s.role === shift.staff_role ? 100 : s.role === 'supervisor' ? 80 : 50,
+      }))
+      .sort((a, b) => b.matchScore - a.matchScore);
+  });
+
+  h('roster:timesheets', ({ all }, { week_start, week_end } = {}) => all(`
+    SELECT te.*, s.first_name, s.last_name FROM timesheet_entry te
+    JOIN staff s ON s.id=te.staff_id
+    WHERE te.work_date>=? AND te.work_date<=?
+    ORDER BY te.work_date DESC
+  `, [week_start, week_end]));
+
+  h('roster:timesheet_create', ({ run }, d) => {
+    const id = genId();
+    run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,notes) VALUES (?,?,?,?,?,?,?)`,
+      [id, d.staff_id, d.shift_id || null, d.work_date, d.hours, d.status || 'draft', d.notes || null]);
+    return { id };
+  });
+
+  h('roster:seed_week', ({ run, all }, { week_start }) => {
+    const existing = all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<date(?, '+7 days')`, [week_start, week_start]);
+    if (existing.length > 0) return { seeded: 0, message: 'Week already has shifts' };
+    const locations = all(`SELECT id FROM roster_location WHERE is_active=1`);
+    const roles = all(`SELECT id FROM roster_role WHERE is_active=1`);
+    const days = [0, 1, 2, 3, 4, 5, 6];
+    let count = 0;
+    days.forEach((d) => {
+      const date = new Date(week_start);
+      date.setDate(date.getDate() + d);
+      const shift_date = date.toISOString().slice(0, 10);
+      [['06:00', '14:00'], ['14:00', '22:00']].forEach(([start, end], i) => {
+        const loc = locations[i % locations.length];
+        const role = roles[i % roles.length];
+        if (!loc || !role) return;
+        const id = genId();
+        run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,status,is_open)
+          VALUES (?,?,?,?,?,?,?,'draft',1)`, [id, 'fac1', loc.id, role.id, shift_date, start, end]);
+        count++;
+      });
+    });
+    return { seeded: count };
+  });
+
+  h('audit:list', ({ all }, { limit, entity_type } = {}) => {
+    let sql = `SELECT * FROM audit_log WHERE 1=1`;
+    const p = [];
+    if (entity_type) { sql += ` AND entity_type=?`; p.push(entity_type); }
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    p.push(limit || 100);
+    return all(sql, p);
+  });
+}
+
+module.exports = { registerExtendedHandlers };
