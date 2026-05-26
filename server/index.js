@@ -101,7 +101,7 @@ function createApp() {
     res.json({
       ok: true,
       service: 'FacilityOS Data Server',
-      version: '1.5.0',
+      version: '1.6.0',
       schemaVersion: db.getSchemaVersion(),
       uptimeSec: Math.floor((Date.now() - startTime) / 1000),
       dbPath: DB_PATH,
@@ -135,7 +135,8 @@ function createApp() {
     'remote:status', 'remote:enable', 'remote:disable', 'remote:rotate_token',
     'cloud:status', 'cloud:configure', 'cloud:pairing_code', 'cloud:sync_now',
     'cloud:pair', 'cloud:agent_credentials', 'cloud:outbox_pending', 'cloud:outbox_ack',
-    'cloud:outbox_error', 'cloud:enqueue_demo',
+    'cloud:outbox_error', 'cloud:enqueue_demo', 'cloud:create_mobile_user',
+    'email:status',
     'staff:by_pin',
   ]);
 
@@ -148,6 +149,7 @@ function createApp() {
     const LOCAL_ADMIN_CHANNELS = new Set([
       'remote:enable', 'remote:disable', 'remote:rotate_token',
       'cloud:configure', 'cloud:pairing_code', 'cloud:sync_now', 'cloud:pair', 'cloud:enqueue_demo',
+      'cloud:create_mobile_user',
     ]);
     if (LOCAL_ADMIN_CHANNELS.has(channel) && !isLocalOrPrivateRequest(req)) {
       return res.status(403).json({ ok: false, error: 'local_admin_required' });

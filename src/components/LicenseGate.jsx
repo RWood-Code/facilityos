@@ -5,6 +5,7 @@ import { TRIAL_DAYS } from '../utils/licenceExpiry';
 import { Btn, Field, Input } from './ui';
 
 export default function LicenseGate({ children }) {
+  const cloudHosted = !!(import.meta.env.VITE_CLOUD_RELAY_URL);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [licenceInput, setLicenceInput] = useState('');
@@ -74,6 +75,8 @@ export default function LicenseGate({ children }) {
     try { localStorage.setItem('facilityos_trial_welcome', '1'); } catch { /* ignore */ }
     setTrialWelcome(false);
   }
+
+  if (cloudHosted) return children;
 
   if (loading) {
     return (

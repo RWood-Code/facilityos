@@ -104,11 +104,12 @@ function MobileConnect({ onConnected }) {
 }
 
 export function MobileConnectGate({ children }) {
-  const [ready, setReady] = useState(() => isElectron());
-  const [checking, setChecking] = useState(() => !isElectron());
+  const cloudHosted = !!(import.meta.env.VITE_CLOUD_RELAY_URL);
+  const [ready, setReady] = useState(() => isElectron() || cloudHosted);
+  const [checking, setChecking] = useState(() => !isElectron() && !cloudHosted);
 
   React.useEffect(() => {
-    if (isElectron()) return undefined;
+    if (isElectron() || cloudHosted) return undefined;
 
     let cancelled = false;
     (async () => {

@@ -3,6 +3,49 @@ import { dbQuery } from '../hooks/useDb';
 import { useAppStore } from '../store/appStore';
 import { Btn, Field, Input } from './ui';
 
+function CloudMobileUserForm({ siteId, toast }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function createUser() {
+    setBusy(true);
+    try {
+      await dbQuery('cloud:create_mobile_user', { email: email.trim(), password, name: name.trim() || undefined });
+      setEmail('');
+      setPassword('');
+      setName('');
+      toast('Cloud mobile login created');
+    } catch (e) {
+      toast(e.message || 'Could not create user', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-gray-100 pt-4 space-y-3">
+      <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Mobile cloud login (Phase 2)</h4>
+      <p className="text-xs text-gray-500">
+        Create manager accounts for the hosted cloud app. Site ID: <code className="bg-gray-100 px-1 rounded">{siteId}</code>
+      </p>
+      <Field label="Name">
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Pool Manager" />
+      </Field>
+      <Field label="Email">
+        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+      </Field>
+      <Field label="Password (min 8 characters)">
+        <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+      </Field>
+      <Btn variant="secondary" onClick={createUser} disabled={busy || !email.trim() || password.length < 8}>
+        Create cloud login
+      </Btn>
+    </div>
+  );
+}
+
 export default function CloudConnectPanel() {
   const { toast } = useAppStore();
   const [status, setStatus] = useState(null);
@@ -82,7 +125,7 @@ export default function CloudConnectPanel() {
       <div>
         <h3 className="text-sm font-semibold text-gray-900">FacilityOS Cloud</h3>
         <p className="text-xs text-gray-500 mt-1">
-          Phase 1: pair this site with your hosted relay, then run the sync agent on the data server PC.
+          Pair this site with your hosted relay. Phase 2 adds mobile manager login and read-only cloud dashboard.
         </p>
       </div>
 
@@ -124,6 +167,10 @@ export default function CloudConnectPanel() {
           <Btn variant="secondary" onClick={syncNow} disabled={busy}>Sync now</Btn>
           <Btn variant="secondary" onClick={enqueueDemo} disabled={busy}>Send demo event</Btn>
         </div>
+      )}
+
+      {status?.paired && (
+        <CloudMobileUserForm siteId={status.site_id} toast={toast} />
       )}
 
       <div className="text-xs text-gray-500 bg-slate-50 rounded-lg p-3 border border-slate-100 space-y-1">

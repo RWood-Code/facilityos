@@ -989,6 +989,28 @@ function registerExtendedHandlers(h) {
     return { id };
   });
 
+  h('cloud:create_mobile_user', ({ get }, { email, password, name, role } = {}) => {
+    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    const siteId = g('cloud_site_id');
+    const agentKey = g('cloud_agent_key');
+    const relayUrl = g('cloud_relay_url') || 'http://127.0.0.1:4850';
+    if (!siteId || !agentKey) throw new Error('cloud_not_paired');
+    if (!email || !password || password.length < 8) throw new Error('invalid_user_credentials');
+    const { createCloudUser } = require('../cloud/relayClient');
+    return createCloudUser({ relayUrl, siteId, agentKey, email, password, name, role });
+  });
+
+  h('email:status', ({ get, all }) => {
+    const { isSmtpConfigured, collectAlertRecipientsFromCtx } = require('../notifications/nonComplianceAlert');
+    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    return {
+      smtp_configured: isSmtpConfigured(),
+      alerts_enabled: g('email_alerts_enabled') === '1',
+      facility_email: g('facility_email') || '',
+      recipient_count: collectAlertRecipientsFromCtx(get, all).length,
+    };
+  });
+
   const { registerV15Handlers } = require('./handlers-v15');
   registerV15Handlers(h);
 }

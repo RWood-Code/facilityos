@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import LicenseGate from './components/LicenseGate';
 import { MobileConnectGate } from './components/MobileConnect';
+import { CloudConnectGate } from './components/CloudLogin';
 import './index.css';
 
 const isDesktopShell = !!(window.facilityos || window.db);
@@ -21,7 +22,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <LicenseGate>
       <MobileConnectGate>
-        <App />
+        <CloudConnectGate>
+          <App />
+        </CloudConnectGate>
       </MobileConnectGate>
     </LicenseGate>
   </React.StrictMode>

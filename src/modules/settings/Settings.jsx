@@ -251,6 +251,23 @@ export default function Settings() {
               <Input value={local.facility_email || ''} onChange={(e) => set('facility_email', e.target.value)} />
             </Field>
           </div>
+          <div className="mt-5 pt-5 border-t border-gray-100">
+            <h4 className="text-sm font-semibold text-gray-900 mb-2">Email alerts</h4>
+            <p className="text-xs text-gray-500 mb-3">
+              Send email when a routine water test fails compliance. Requires SMTP on the data server PC
+              (<code className="bg-gray-100 px-1 rounded">SMTP_HOST</code>, optional <code className="bg-gray-100 px-1 rounded">SMTP_USER</code> / <code className="bg-gray-100 px-1 rounded">SMTP_PASS</code>).
+              Also notifies active managers with an email on file.
+            </p>
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={local.email_alerts_enabled === '1'}
+                onChange={(e) => set('email_alerts_enabled', e.target.checked ? '1' : '0')}
+                className="rounded border-gray-300"
+              />
+              Email on non-compliant pool tests
+            </label>
+          </div>
         </div>
       )}
 

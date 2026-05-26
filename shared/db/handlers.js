@@ -63,13 +63,26 @@ function registerHandlers(h) {
         d.turbidity ?? null, d.cyanuric_acid ?? null,
         d.is_compliant == null ? null : (d.is_compliant ? 1 : 0),
         d.action_taken || null, d.notes || null, d.retest_required ? 1 : 0]);
+    const pool = get(`SELECT name FROM pool WHERE id=?`, [d.pool_id]);
     if ((d.is_compliant === 0 || d.is_compliant === false) && (d.test_type || 'routine') === 'routine') {
       try {
-        const pool = get(`SELECT name FROM pool WHERE id=?`, [d.pool_id]);
         run(`INSERT INTO notification (id,type,title,message,related_id,link_module) VALUES (?,?,?,?,?,?)`,
           [genId(), 'pool_non_compliance', 'Non-Compliant Pool Test',
             `Pool "${pool?.name || 'Unknown'}" failed compliance testing. Immediate action required.`,
             d.pool_id, 'poolhistory']);
+        const emailCtx = arguments[0];
+        const alertMeta = {
+          poolName: pool?.name,
+          testDate: d.test_date,
+          testTime: d.test_time,
+          poolId: d.pool_id,
+          testId: id,
+        };
+        setImmediate(() => {
+          const { sendNonComplianceEmail } = require('../notifications/nonComplianceAlert');
+          sendNonComplianceEmail(emailCtx, alertMeta)
+            .catch((e) => console.error('[email] non-compliance alert:', e.message));
+        });
       } catch { /* notification table may not exist pre-migration */ }
     }
     writeAudit({ run, get, all: () => [] }, {
@@ -84,7 +97,14 @@ function registerHandlers(h) {
       entity_type: 'water_test',
       entity_id: id,
       op: 'create',
-      payload: { pool_id: d.pool_id, test_date: d.test_date, is_compliant: d.is_compliant },
+      payload: {
+        pool_id: d.pool_id,
+        pool_name: pool?.name,
+        test_date: d.test_date,
+        test_time: d.test_time,
+        is_compliant: d.is_compliant,
+        test_type: d.test_type || 'routine',
+      },
     });
     return { id };
   });

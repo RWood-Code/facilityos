@@ -169,16 +169,20 @@ Reseller workflow:
 
 Runbook: [cloud/README.md](cloud/README.md)
 
-### Phase 2 — Mobile via cloud
+### Phase 2 — Mobile via cloud ✅ (scaffold in repo)
 
-- Hosted PWA default API = relay URL
-- User login (site-scoped)
-- Read-only manager dashboard from relay cache
+- [x] Hosted PWA cloud login (`VITE_CLOUD_RELAY_URL` + `CloudLogin`)
+- [x] Site-scoped user login (`POST /api/sites/:siteId/auth/login`)
+- [x] Read-only manager dashboard from relay cache (`GET /manager-dashboard`)
+- [x] Create mobile users from Settings → Cloud (agent-authenticated)
+- [x] Web Push scaffold on non-compliant test ingest (requires VAPID keys)
+- [ ] Hosted PWA at `app.facilityos.nz` (deploy `dist/` to your CDN)
+- [ ] `POST /api/sites/{siteId}/query` write path via agent (Phase 3)
 
 ### Phase 3 — Writes + offline queue
 
 - Mobile test entry through relay → agent → SQLite
-- Push notifications (non-compliant pool alert)
+- Native push via Capacitor + relay (see [CAPACITOR.md](CAPACITOR.md))
 
 ### Phase 4 — Reseller portal
 

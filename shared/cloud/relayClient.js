@@ -48,9 +48,18 @@ async function sendAgentHeartbeat({ relayUrl, siteId, agentKey, pendingCount }) 
   });
 }
 
+async function createCloudUser({ relayUrl, siteId, agentKey, email, password, name, role }) {
+  return relayFetch(relayUrl, `/api/sites/${siteId}/users`, {
+    method: 'POST',
+    agentKey,
+    body: { email, password, name, role: role || 'manager' },
+  });
+}
+
 module.exports = {
   relayFetch,
   pairWithRelay,
   pushEventsToRelay,
   sendAgentHeartbeat,
+  createCloudUser,
 };

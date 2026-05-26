@@ -14,6 +14,8 @@ import { dbQuery, checkServerHealth, isElectron } from './hooks/useDb';
 import { useMediaQuery } from './hooks/useMediaQuery';
 import { buildNavGroups, buildMobileNavItems, MODULE_MAP, MODULE_TITLES } from './config/modules';
 import { parseAppHash } from './utils/mobileAccess';
+import { isCloudClientMode, getCloudSession } from './utils/cloudRelay';
+import CloudManagerView from './modules/cloud/CloudManagerView';
 
 export default function App() {
   const {
@@ -68,6 +70,15 @@ export default function App() {
     return (
       <>
         <SteamTablet onExit={exitTabletMode} />
+        <Toasts toasts={toasts} />
+      </>
+    );
+  }
+
+  if (!isElectron() && isCloudClientMode() && getCloudSession()) {
+    return (
+      <>
+        <CloudManagerView />
         <Toasts toasts={toasts} />
       </>
     );

@@ -32,6 +32,18 @@ curl http://127.0.0.1:4850/api/sites
 curl http://127.0.0.1:4850/api/sites/SITE_ID/snapshot
 ```
 
+## Phase 2 — mobile manager login
+
+1. Pair site (above) and enable cloud sync
+2. Settings → Cloud → **Create cloud login** (email + password ≥ 8 chars)
+3. Build hosted PWA: `set VITE_CLOUD_RELAY_URL=http://127.0.0.1:4850 && npm run build`
+4. Serve `dist/` (or open via vite preview) — sign in with site ID + credentials
+5. Non-compliant water tests synced to relay appear on the cloud manager dashboard
+
+Optional Web Push: set `FACILITYOS_VAPID_PUBLIC` / `FACILITYOS_VAPID_PRIVATE` on the relay.
+
+See [CAPACITOR.md](../CAPACITOR.md) for native app store planning.
+
 ## Production deployment
 
 1. Deploy `cloud/relay` to your host (Fly.io, Azure, etc.)
