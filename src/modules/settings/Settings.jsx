@@ -7,6 +7,7 @@ import { downloadCsv, parseCsv } from '../../utils/download';
 import { listBackups, createBackup, restoreBackup, checkIntegrity, formatBytes } from '../../utils/serverApi';
 import CustomLimitsEditor from '../../components/CustomLimitsEditor';
 import MobileAccessPanel from '../../components/MobileAccessPanel';
+import RemoteAccessPanel from '../../components/RemoteAccessPanel';
 import CloudConnectPanel from '../../components/CloudConnectPanel';
 import { limitsToForm, formToLimits } from '../../utils/poolUtils';
 import { isModuleLicensed, getModuleBlockReason } from '../../utils/moduleAccess';
@@ -224,7 +225,10 @@ export default function Settings() {
       />
 
       {tab === 'phones' && (
-        <MobileAccessPanel />
+        <div className="space-y-6 max-w-2xl">
+          <MobileAccessPanel />
+          <RemoteAccessPanel />
+        </div>
       )}
 
       {tab === 'facility' && (
