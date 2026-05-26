@@ -7,10 +7,11 @@ import { Btn, Field, Input } from './ui';
 export default function LicenseGate({ children }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [key, setKey] = useState('');
-  const [expiry, setExpiry] = useState('');
-  const [adminMode, setAdminMode] = useState(false);
+  const [licenceInput, setLicenceInput] = useState('');
+  const [activateError, setActivateError] = useState('');
+  const [activating, setActivating] = useState(false);
   const [trialWelcome, setTrialWelcome] = useState(false);
+  const [fileInfo, setFileInfo] = useState(null);
   const countdown = useLicenceCountdown(status?.expires_at);
 
   async function load() {
@@ -20,6 +21,10 @@ export default function LicenseGate({ children }) {
       s = await dbQuery('licence:status');
     }
     setStatus(s);
+    try {
+      const info = await dbQuery('licence:file_info');
+      setFileInfo(info);
+    } catch { /* ignore */ }
     if (s?.valid && s?.isTrial) {
       try {
         if (!localStorage.getItem('facilityos_trial_welcome')) setTrialWelcome(true);
@@ -30,16 +35,33 @@ export default function LicenseGate({ children }) {
 
   useEffect(() => { load(); }, []);
 
-  async function activate() {
-    if (!key || !expiry) return;
-    await dbQuery('licence:activate', {
-      licence_key: key,
-      expires_at: expiry,
-      organisation: 'Licensed facility',
-    });
-    try { localStorage.setItem('facilityos_trial_welcome', '1'); } catch { /* ignore */ }
-    setTrialWelcome(false);
-    load();
+  async function activate(licenceFile) {
+    if (!licenceFile?.trim()) return;
+    setActivating(true);
+    setActivateError('');
+    try {
+      await dbQuery('licence:activate', { licence_file: licenceFile.trim() });
+      try { localStorage.setItem('facilityos_trial_welcome', '1'); } catch { /* ignore */ }
+      setTrialWelcome(false);
+      setLicenceInput('');
+      await load();
+    } catch (e) {
+      setActivateError(e.message || 'Activation failed');
+    } finally {
+      setActivating(false);
+    }
+  }
+
+  async function onFileSelected(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      await activate(text);
+    } catch (err) {
+      setActivateError(err.message || 'Could not read licence file');
+    }
+    e.target.value = '';
   }
 
   function dismissTrialWelcome() {
@@ -71,21 +93,39 @@ export default function LicenseGate({ children }) {
                 {countdown.expired && ` · ${countdown.label}`}
               </p>
             )}
-            {status?.expires_at && !countdown.expired && (
-              <p className="font-mono text-lg text-red-700 mt-3 tabular-nums">{countdown.label}</p>
-            )}
           </div>
           <p className="text-sm text-gray-600 mb-4 text-center">
-            Enter a licence key from your vendor to continue using FacilityOS.
+            Install the signed <strong>facilityos.lic</strong> file from your vendor. Expiry and plan are verified cryptographically — they cannot be edited.
           </p>
+          {fileInfo && (
+            <p className="text-xs text-gray-500 mb-4 text-center break-all">
+              Or save to: <code className="bg-gray-100 px-1 rounded">{fileInfo.directory}\{fileInfo.filename}</code> and restart FacilityOS.
+            </p>
+          )}
           <div className="space-y-3">
-            <Field label="Licence key">
-              <Input value={key} onChange={(e) => setKey(e.target.value)} placeholder="FACILITYOS-XXXX" />
+            <Field label="Upload licence file">
+              <input
+                type="file"
+                accept=".lic,.json,application/json"
+                onChange={onFileSelected}
+                disabled={activating}
+                className="block w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-cyan-50 file:text-cyan-800 file:font-medium"
+              />
             </Field>
-            <Field label="Expires (YYYY-MM-DD)">
-              <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+            <Field label="Or paste licence file contents">
+              <Input
+                value={licenceInput}
+                onChange={(e) => setLicenceInput(e.target.value)}
+                placeholder="Paste facilityos.lic JSON"
+                autoComplete="off"
+              />
             </Field>
-            <Btn className="w-full" onClick={activate} disabled={!key || !expiry}>Activate licence</Btn>
+            {activateError && (
+              <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{activateError}</p>
+            )}
+            <Btn className="w-full" onClick={() => activate(licenceInput)} disabled={!licenceInput.trim() || activating}>
+              {activating ? 'Activating…' : 'Activate licence'}
+            </Btn>
           </div>
         </div>
       </div>
@@ -109,7 +149,7 @@ export default function LicenseGate({ children }) {
             <p className="text-xs text-gray-500 mt-2">Expires {status.expires_at?.slice(0, 10)}</p>
           </div>
           <p className="text-sm text-gray-600 mb-6 text-center">
-            Explore all trial features now. Before the trial ends, enter a licence key under Settings → Licence.
+            Before the trial ends, install your vendor&apos;s <strong>facilityos.lic</strong> file under Settings → Licence.
           </p>
           <Btn className="w-full" onClick={dismissTrialWelcome}>Continue to FacilityOS</Btn>
         </div>

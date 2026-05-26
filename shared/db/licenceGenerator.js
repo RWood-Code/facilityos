@@ -1,4 +1,5 @@
 const { ALL_MODULE_KEYS, PLAN_ENTITLEMENTS, getPlanModules } = require('./entitlements');
+const { signLicenceDocument } = require('./licenceSigning');
 
 const PLAN_CODES = {
   trial: 'TRIAL',
@@ -81,6 +82,16 @@ function buildLicencePackage({
   const expiresAt = expires_at || defaultExpiryDate(1);
   const features = featuresFromModules(plan, modules);
 
+  const signed = signLicenceDocument({
+    licence_key,
+    plan,
+    organisation,
+    expires_at: expiresAt,
+    max_terminals,
+    modules,
+    features,
+  });
+
   return {
     licence_key,
     organisation: organisation || null,
@@ -90,11 +101,12 @@ function buildLicencePackage({
     features,
     modules,
     moduleList: ALL_MODULE_KEYS.filter((k) => modules[k]),
+    licence_file: signed.licence_file,
+    activation_code: signed.licence_file,
     instructions: [
-      'Open FacilityOS on the data server PC',
-      'Go to Settings → Licence',
-      'Enter the licence key, plan, and expiry (or paste the JSON package)',
-      'Click Activate — modules sync automatically from the package',
+      'Send the customer the facilityos.lic file (or its contents)',
+      'They save it to %ProgramData%\\FacilityOS\\licence\\facilityos.lic on the data server PC',
+      'Or paste/upload the file in Settings → Licence (or on the licence gate if expired)',
     ],
   };
 }

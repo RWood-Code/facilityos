@@ -46,5 +46,6 @@ coverage/
 # Electron builder cache
 .cache/
 
-# Licence issuer local registry
+# Licence issuer local registry + signing keys
 licence-issuer/data/issued.json
+licence-issuer/data/signing-key.pem

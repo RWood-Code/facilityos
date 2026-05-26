@@ -63,7 +63,7 @@ export default function LicenceExpiryBanner() {
               : 'bg-white text-cyan-800 hover:bg-cyan-50 border-0 font-semibold'}
             onClick={openLicenceSettings}
           >
-            {isTrial ? 'Enter licence key' : 'Renew licence'}
+            {isTrial ? 'Install licence' : 'Renew licence'}
           </Btn>
         </div>
       </div>

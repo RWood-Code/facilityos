@@ -21,7 +21,7 @@ function parseArgs(argv) {
     else if (a === '--expiry') args.expiry = argv[++i];
     else if (a === '--terminals') args.terminals = Number(argv[++i]);
     else if (a === '--modules') args.modules = argv[++i];
-    else if (a === '--json') args.json = true;
+    else if (a === '--out') args.out = argv[++i];
     else if (a === '--help' || a === '-h') args.help = true;
   }
   return args;
@@ -50,6 +50,7 @@ Options:
   --terminals N             Max terminals (default: 10)
   --modules a,b,c           Comma list of enabled modules (overrides plan defaults)
   --json                    Output JSON only
+  --out PATH                Write facilityos.lic to PATH
 
 Modules: ${ALL_MODULE_KEYS.join(', ')}
 `);
@@ -83,8 +84,18 @@ if (args.json) {
   process.exit(0);
 }
 
+if (args.out) {
+  const fs = require('fs');
+  const path = require('path');
+  const outPath = path.resolve(args.out);
+  fs.writeFileSync(outPath, pkg.licence_file, 'utf8');
+  console.log(`Wrote ${outPath}`);
+}
+
 console.log('\n=== FacilityOS Licence ===\n');
-console.log(`Licence key:    ${pkg.licence_key}`);
+console.log('Signed licence file (send facilityos.lic to customer):');
+console.log(pkg.licence_file);
+console.log(`\nReference key:  ${pkg.licence_key}`);
 console.log(`Organisation:   ${pkg.organisation || args.org}`);
 console.log(`Plan:           ${pkg.plan}`);
 console.log(`Expires:        ${pkg.expires_at}`);

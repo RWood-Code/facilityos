@@ -37,7 +37,7 @@ function LicenceStatusCard({ licence }) {
       <p className="text-xs text-gray-600">Expires: {licence.expires_at?.slice(0, 10)} · Max terminals: {licence.max_terminals}</p>
       {isTrial && licence.valid && (
         <p className="text-xs text-amber-800 mt-3">
-          Trial access ends automatically. Enter a purchased licence key below before expiry.
+          Trial access ends automatically. Install your vendor&apos;s facilityos.lic file before expiry.
         </p>
       )}
     </div>
@@ -63,7 +63,8 @@ export default function Settings() {
   const [terminalConfig, setTerminalConfig] = useState(null);
   const [health, setHealth] = useState(null);
   const [licence, setLicence] = useState(null);
-  const [licForm, setLicForm] = useState({ key: '', expiry: '' });
+  const [licForm, setLicForm] = useState({ licenceFile: '' });
+  const [licenceFileInfo, setLicenceFileInfo] = useState(null);
   const [backups, setBackups] = useState([]);
   const [integrity, setIntegrity] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
@@ -112,6 +113,7 @@ export default function Settings() {
       setPools(p || []);
     });
     dbQuery('licence:status').then(setLicence).catch(() => {});
+    dbQuery('licence:file_info').then(setLicenceFileInfo).catch(() => {});
     if (window.facilityos) {
       window.facilityos.getConfig().then(setTerminalConfig);
       window.facilityos.checkHealth().then(setHealth);
@@ -188,6 +190,9 @@ export default function Settings() {
     const status = await dbQuery('licence:status');
     setLicence(status);
     setStoreLicence(status);
+    try {
+      setLicenceFileInfo(await dbQuery('licence:file_info'));
+    } catch { /* ignore */ }
     const s = await dbQuery('settings:all');
     setLocal(s || {});
     setSettings(s || {});
@@ -455,38 +460,66 @@ export default function Settings() {
           )}
 
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h3 className="text-sm font-semibold mb-1">Activate licence</h3>
+            <h3 className="text-sm font-semibold mb-1">Install licence certificate</h3>
             <p className="text-xs text-gray-500 mb-4">
-              Enter the licence key and expiry date supplied by your vendor.
+              Use the signed <strong>facilityos.lic</strong> file from your vendor. Expiry, plan, and modules are verified with Ed25519 — they cannot be changed manually.
             </p>
-            <Field label="Licence key">
-              <Input
-                value={licForm.key}
-                onChange={(e) => setLicForm((f) => ({ ...f, key: e.target.value }))}
-                placeholder="FACILITYOS-PRO-…"
+            {licenceFileInfo && (
+              <div className="text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 mb-4 break-all">
+                <p className="font-medium text-gray-800 mb-1">Licence file location (data server)</p>
+                <code>{licenceFileInfo.path}</code>
+                {licenceFileInfo.exists && (
+                  <p className="mt-1 text-emerald-700">File installed · updated {licenceFileInfo.modified_at?.slice(0, 10)}</p>
+                )}
+                {!licenceFileInfo.exists && (
+                  <p className="mt-1 text-gray-500">No file yet — upload below or copy facilityos.lic into the folder above and restart.</p>
+                )}
+              </div>
+            )}
+            <Field label="Upload facilityos.lic">
+              <input
+                type="file"
+                accept=".lic,.json,application/json"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const text = await file.text();
+                    await dbQuery('licence:activate', { licence_file: text.trim() });
+                    await refreshLicence();
+                    setLicForm({ licenceFile: '' });
+                    toast('Licence installed');
+                  } catch (err) {
+                    toast(err.message || 'Activation failed', 'error');
+                  }
+                  e.target.value = '';
+                }}
+                className="block w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-cyan-50 file:text-cyan-800 file:font-medium"
               />
             </Field>
-            <Field label="Expiry date">
+            <Field label="Or paste licence file contents">
               <Input
-                type="date"
-                value={licForm.expiry}
-                onChange={(e) => setLicForm((f) => ({ ...f, expiry: e.target.value }))}
+                value={licForm.licenceFile}
+                onChange={(e) => setLicForm((f) => ({ ...f, licenceFile: e.target.value }))}
+                placeholder="Paste facilityos.lic JSON"
+                autoComplete="off"
               />
             </Field>
             <Btn
               onClick={async () => {
-                if (!licForm.key.trim() || !licForm.expiry) return;
-                await dbQuery('licence:activate', {
-                  licence_key: licForm.key.trim(),
-                  expires_at: licForm.expiry,
-                  organisation: local.facility_name || 'Licensed facility',
-                });
-                await refreshLicence();
-                toast('Licence activated');
+                if (!licForm.licenceFile.trim()) return;
+                try {
+                  await dbQuery('licence:activate', { licence_file: licForm.licenceFile.trim() });
+                  await refreshLicence();
+                  setLicForm({ licenceFile: '' });
+                  toast('Licence installed');
+                } catch (e) {
+                  toast(e.message || 'Activation failed', 'error');
+                }
               }}
-              disabled={!licForm.key.trim() || !licForm.expiry}
+              disabled={!licForm.licenceFile.trim()}
             >
-              Activate licence
+              Install licence
             </Btn>
           </div>
         </div>

@@ -12,6 +12,7 @@ const { FacilityDatabase } = require('./db');
 const { isChannelAllowed } = require('../shared/db/entitlements');
 const { verifyRemoteAccess, readRemoteSettings } = require('../shared/db/remoteAccess');
 const { getDistPath } = require('../electron/paths');
+const { setLicenceDataDir } = require('../shared/db/licencePaths');
 
 const PORT = Number(process.env.FACILITYOS_PORT || 3847);
 const HOST = process.env.FACILITYOS_HOST || '0.0.0.0';
@@ -99,7 +100,7 @@ function createApp() {
     res.json({
       ok: true,
       service: 'FacilityOS Data Server',
-      version: '1.1.0',
+      version: '1.1.1',
       schemaVersion: db.getSchemaVersion(),
       uptimeSec: Math.floor((Date.now() - startTime) / 1000),
       dbPath: DB_PATH,
@@ -126,7 +127,7 @@ function createApp() {
 
   const LICENCE_EXEMPT = new Set([
     'licence:status', 'licence:activate', 'licence:plans', 'licence:ensure_trial',
-    'licence:plan_modules',
+    'licence:plan_modules', 'licence:file_info', 'licence:sync_from_file',
     'licence:set_features', 'licence:sync_modules',
     'settings:get', 'settings:set', 'settings:all', 'health',
     'audit:list', 'modules:list',
@@ -238,10 +239,19 @@ function createApp() {
 function startServer(options = {}) {
   const port = options.port || PORT;
   const host = options.host || HOST;
+  setLicenceDataDir(DATA_DIR);
   const app = createApp();
   return new Promise((resolve, reject) => {
     const server = app.listen(port, host, () => {
       getDatabase();
+      try {
+        const sync = getDatabase().query('licence:sync_from_file');
+        if (sync?.synced) {
+          console.log(`[licence] Loaded ${sync.licence_key} from licence file (expires ${sync.expires_at})`);
+        }
+      } catch (e) {
+        console.warn('[licence] Could not load licence file:', e.message);
+      }
       scheduleAutoBackup();
       console.log(`FacilityOS server listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
       console.log(`Database: ${DB_PATH}`);

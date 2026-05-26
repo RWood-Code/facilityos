@@ -87,6 +87,9 @@ export default function IssuedRegistry({ refreshKey }) {
                   <td className="py-2.5 px-2 capitalize text-slate-600">{r.plan}</td>
                   <td className="py-2.5 px-2 text-slate-600">{r.expires_at}</td>
                   <td className="py-2.5 px-2 text-right whitespace-nowrap">
+                    {r.package?.licence_file && (
+                      <button type="button" className="text-xs text-emerald-700 hover:text-emerald-900 mr-2" onClick={() => copyText(r.package.licence_file)}>.lic</button>
+                    )}
                     <button type="button" className="text-xs text-slate-500 hover:text-slate-800 mr-2" onClick={() => copyText(JSON.stringify(r.package, null, 2))}>JSON</button>
                     <button type="button" className="text-xs text-red-500 hover:text-red-700" onClick={() => remove(r.id)}>Remove</button>
                   </td>

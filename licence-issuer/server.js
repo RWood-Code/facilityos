@@ -63,10 +63,9 @@ function createIssuerApp(distDir) {
 
     pkg.site_code = siteCode ? String(siteCode).trim() : null;
     pkg.instructions = [
-      'Open FacilityOS on the customer data server PC',
-      'If licence expired: click Administrator → activate licence on the gate screen',
-      'Otherwise: Settings → Licence → enter key, plan, and expiry',
-      'Click Activate — modules sync automatically from the package',
+      'Download or copy the facilityos.lic file and send it to the customer',
+      'Customer saves to %ProgramData%\\FacilityOS\\licence\\facilityos.lic on the data server PC',
+      'Or they upload/paste it in Settings → Licence (or on the licence gate if expired)',
     ];
 
     const record = addIssued(pkg, notes);

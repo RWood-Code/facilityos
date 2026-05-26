@@ -49,6 +49,48 @@ function planFromLicenceKey(licenceKey) {
   return 'standard';
 }
 
+function applyVerifiedLicence(db, verified, { source = 'manual' } = {}) {
+  const { run, get } = db;
+  const {
+    licence_key,
+    expires_at,
+    organisation,
+    plan,
+    max_terminals,
+    features,
+    modules,
+  } = verified;
+
+  const selectedPlan = plan || planFromLicenceKey(licence_key);
+  const existing = get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
+  let featuresJson = features ? (typeof features === 'string' ? features : JSON.stringify(features)) : null;
+  if (!featuresJson && modules && typeof modules === 'object') {
+    const { featuresFromModules } = require('./licenceGenerator');
+    const f = featuresFromModules(selectedPlan, modules);
+    featuresJson = f ? JSON.stringify(f) : null;
+  }
+  const { normalizeModuleSelection } = require('./licenceGenerator');
+  const effectiveModules = modules && typeof modules === 'object'
+    ? normalizeModuleSelection(selectedPlan, modules)
+    : resolveModuleAccess(selectedPlan, featuresJson);
+
+  if (existing) {
+    run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, features=COALESCE(?, features), is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
+      [expires_at, organisation || null, selectedPlan, max_terminals || 10, featuresJson, licence_key]);
+  } else {
+    run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,features,is_active,last_validated) VALUES (?,?,?,?,?,?,?,1,datetime('now'))`,
+      [genId(), licence_key, organisation || null, selectedPlan, expires_at, max_terminals || 10, featuresJson]);
+  }
+  syncSettingsFromModules(run, effectiveModules);
+  writeAudit({ run, get, all: () => [] }, {
+    action: 'licence.activate',
+    entity_type: 'licence',
+    entity_id: licence_key,
+    details: { expires_at, organisation, plan: selectedPlan, modules: effectiveModules, source },
+  });
+  return { ok: true, modules: effectiveModules, licence_key, expires_at };
+}
+
 function registerExtendedHandlers(h) {
   h('closures:reopen', ({ run }, { id, reopened_by }) => {
     run(`UPDATE pool_closure SET reopened_at=datetime('now'), reopened_by=? WHERE id=?`, [reopened_by || null, id]);
@@ -154,34 +196,50 @@ function registerExtendedHandlers(h) {
     return { modules };
   });
 
-  h('licence:activate', ({ run, get }, { licence_key, expires_at, organisation, plan, max_terminals, features, modules }) => {
-    const selectedPlan = plan || planFromLicenceKey(licence_key);
-    const existing = get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
-    let featuresJson = features ? (typeof features === 'string' ? features : JSON.stringify(features)) : null;
-    if (!featuresJson && modules && typeof modules === 'object') {
-      const { featuresFromModules } = require('./licenceGenerator');
-      const f = featuresFromModules(selectedPlan, modules);
-      featuresJson = f ? JSON.stringify(f) : null;
+  h('licence:file_info', () => {
+    const { getLicenceFileInfo } = require('./licencePaths');
+    return getLicenceFileInfo();
+  });
+
+  h('licence:sync_from_file', (db) => {
+    const { readLicenceFile } = require('./licencePaths');
+    const { parseLicenceDocumentText } = require('./licenceSigning');
+    const raw = readLicenceFile();
+    if (!raw) return { synced: false, reason: 'no_file' };
+    const verified = parseLicenceDocumentText(raw);
+    const result = applyVerifiedLicence(db, verified, { source: 'file' });
+    return { synced: true, ...result };
+  });
+
+  h('licence:activate', (db, args = {}) => {
+    const { parseLicenceInput, LICENCE_FORMAT } = require('./licenceSigning');
+    const { writeLicenceFile } = require('./licencePaths');
+
+    const raw = args.licence_file || args.activation_code;
+    if (!raw) {
+      if (args.licence_key || args.expires_at) {
+        throw new Error(
+          'Manual licence entry is not permitted. Install the facilityos.lic file from your vendor.',
+        );
+      }
+      throw new Error('Licence file is required');
     }
-    const { normalizeModuleSelection } = require('./licenceGenerator');
-    const effectiveModules = modules && typeof modules === 'object'
-      ? normalizeModuleSelection(selectedPlan, modules)
-      : resolveModuleAccess(selectedPlan, featuresJson);
-    if (existing) {
-      run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, features=COALESCE(?, features), is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
-        [expires_at, organisation || null, selectedPlan, max_terminals || 10, featuresJson, licence_key]);
-    } else {
-      run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,features,is_active,last_validated) VALUES (?,?,?,?,?,?,?,1,datetime('now'))`,
-        [genId(), licence_key, organisation || null, selectedPlan, expires_at, max_terminals || 10, featuresJson]);
+
+    const verified = parseLicenceInput(raw);
+
+    const trimmed = String(raw).trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const doc = JSON.parse(trimmed);
+        if (doc.format === LICENCE_FORMAT) {
+          writeLicenceFile(trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`);
+        }
+      } catch {
+        /* verified already; skip file write if JSON unreadable */
+      }
     }
-    syncSettingsFromModules(run, effectiveModules);
-    writeAudit({ run, get, all: () => [] }, {
-      action: 'licence.activate',
-      entity_type: 'licence',
-      entity_id: licence_key,
-      details: { expires_at, organisation, plan: selectedPlan, modules: effectiveModules },
-    });
-    return { ok: true, modules: effectiveModules };
+
+    return applyVerifiedLicence(db, verified, { source: 'activate' });
   });
 
   h('saved_reports:list', ({ all }) => all(`SELECT * FROM saved_report ORDER BY created_at DESC`));

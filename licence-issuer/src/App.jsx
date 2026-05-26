@@ -45,7 +45,7 @@ export default function App() {
       </main>
 
       <footer className="max-w-5xl mx-auto mt-10 text-center text-xs text-cyan-100/50">
-        Registry stored locally in licence-issuer/data/issued.json · Keys activate on each site via FacilityOS
+        Registry stored locally in licence-issuer/data/issued.json · Customer installs signed facilityos.lic on each site
       </footer>
     </div>
   );
