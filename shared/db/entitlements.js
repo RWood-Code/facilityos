@@ -15,6 +15,7 @@ const ALL_MODULE_KEYS = [
   'reports',
   'rostering',
   'manager_dashboard',
+  'iltp_poolsafe',
 ];
 
 /** Maps licence module key → facility setting key */
@@ -30,6 +31,7 @@ const MODULE_TO_SETTING = {
   reports: 'show_reports',
   rostering: 'show_rostering',
   manager_dashboard: 'show_manager_dashboard',
+  iltp_poolsafe: 'show_iltp_poolsafe',
 };
 
 /** Maps module registry id → licence module key */
@@ -49,12 +51,13 @@ const MODULE_ID_TO_LICENCE = {
   assets: 'assets',
   reports: 'reports',
   managerdashboard: 'manager_dashboard',
+  iltp: 'iltp_poolsafe',
 };
 
 const PLAN_ENTITLEMENTS = {
-  trial: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports'],
-  standard: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports'],
-  professional: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports', 'rostering', 'manager_dashboard'],
+  trial: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports', 'iltp_poolsafe'],
+  standard: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports', 'iltp_poolsafe'],
+  professional: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports', 'rostering', 'manager_dashboard', 'iltp_poolsafe'],
   enterprise: ALL_MODULE_KEYS,
   /** Hosted relay tier — same modules as professional + cloud sync (enforced via cloud_enabled setting) */
   cloud: ['pools', 'dosing', 'closures', 'steam', 'workorders', 'schedules', 'staff', 'assets', 'reports', 'rostering', 'manager_dashboard'],
@@ -88,6 +91,12 @@ const CHANNEL_MODULE_PREFIXES = [
   ['roster:', 'rostering'],
   ['export:roster', 'rostering'],
   ['export:payroll', 'rostering'],
+  ['notifications:', 'iltp_poolsafe'],
+  ['budget:', 'schedules'],
+  ['iltp:', 'iltp_poolsafe'],
+  ['poolsafe_audits:', 'iltp_poolsafe'],
+  ['poolsafe_docs:', 'iltp_poolsafe'],
+  ['training_records:', 'staff'],
 ];
 
 function getPlanModules(plan) {

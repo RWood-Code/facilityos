@@ -22,6 +22,7 @@ const DATA_DIR = process.env.FACILITYOS_DATA_DIR || path.join(
   'data'
 );
 const DB_PATH = process.env.FACILITYOS_DB_PATH || path.join(DATA_DIR, 'facilityos.db');
+const UPLOADS_DIR = path.join(path.dirname(DATA_DIR), 'uploads');
 
 let database;
 let backupTimer;
@@ -100,7 +101,7 @@ function createApp() {
     res.json({
       ok: true,
       service: 'FacilityOS Data Server',
-      version: '1.1.1',
+      version: '1.5.0',
       schemaVersion: db.getSchemaVersion(),
       uptimeSec: Math.floor((Date.now() - startTime) / 1000),
       dbPath: DB_PATH,
@@ -216,6 +217,48 @@ function createApp() {
     }
   });
 
+  app.post('/api/upload', express.json({ limit: '20mb' }), (req, res) => {
+    try {
+      const { filename, data, subfolder = 'iltp' } = req.body || {};
+      if (!filename || !data) {
+        return res.status(400).json({ ok: false, error: 'filename and data required' });
+      }
+      const safeFolder = String(subfolder).replace(/[^a-z0-9_-]/gi, '') || 'iltp';
+      const safeName = path.basename(String(filename)).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storedName = `${Date.now().toString(36)}-${safeName}`;
+      const dir = path.join(UPLOADS_DIR, safeFolder);
+      fs.mkdirSync(dir, { recursive: true });
+      const buf = Buffer.from(data, 'base64');
+      if (buf.length > 15 * 1024 * 1024) {
+        return res.status(413).json({ ok: false, error: 'file too large (max 15 MB)' });
+      }
+      fs.writeFileSync(path.join(dir, storedName), buf);
+      const stored_path = `${safeFolder}/${storedName}`;
+      res.json({
+        ok: true,
+        data: {
+          name: safeName,
+          stored_path,
+          url: `/api/uploads/${stored_path}`,
+          size: buf.length,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/uploads/:folder/:file', (req, res) => {
+    const folder = path.basename(req.params.folder);
+    const file = path.basename(req.params.file);
+    const fp = path.resolve(UPLOADS_DIR, folder, file);
+    if (!fp.startsWith(path.resolve(UPLOADS_DIR))) {
+      return res.status(403).json({ ok: false, error: 'forbidden' });
+    }
+    if (!fs.existsSync(fp)) return res.status(404).json({ ok: false, error: 'not found' });
+    res.sendFile(fp);
+  });
+
   app.get('/api/integrity', (_req, res) => {
     try {
       res.json({ ok: true, data: getDatabase().integrityCheck() });
@@ -268,4 +311,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startServer, createApp, getDatabase, DB_PATH, DATA_DIR };
+module.exports = { startServer, createApp, getDatabase, DB_PATH, DATA_DIR, UPLOADS_DIR };

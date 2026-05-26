@@ -16,6 +16,7 @@ const MODULE_LICENCE_KEYS = {
   assets: 'assets',
   reports: 'reports',
   managerdashboard: 'manager_dashboard',
+  iltp: 'iltp_poolsafe',
 };
 
 export function getLicenceKey(moduleId, mod) {

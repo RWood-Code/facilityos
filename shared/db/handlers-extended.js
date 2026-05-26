@@ -988,6 +988,9 @@ function registerExtendedHandlers(h) {
     });
     return { id };
   });
+
+  const { registerV15Handlers } = require('./handlers-v15');
+  registerV15Handlers(h);
 }
 
 module.exports = { registerExtendedHandlers };

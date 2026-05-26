@@ -52,7 +52,7 @@ function registerHandlers(h) {
       ) latest ON tr.pool_id=latest.pool_id
         AND (tr.test_date||' '||COALESCE(tr.test_time,'00:00'))=latest.max_dt
     `));
-  h('tests:create', ({ run }, d) => {
+  h('tests:create', ({ run, get }, d) => {
     const id = genId();
     run(`INSERT INTO test_result
       (id,pool_id,test_type,test_date,test_time,tested_by,ph,free_chlorine,total_available_chlorine,combined_chlorine,temperature,total_alkalinity,total_hardness,tds,turbidity,cyanuric_acid,is_compliant,action_taken,notes,retest_required)
@@ -63,6 +63,15 @@ function registerHandlers(h) {
         d.turbidity ?? null, d.cyanuric_acid ?? null,
         d.is_compliant == null ? null : (d.is_compliant ? 1 : 0),
         d.action_taken || null, d.notes || null, d.retest_required ? 1 : 0]);
+    if ((d.is_compliant === 0 || d.is_compliant === false) && (d.test_type || 'routine') === 'routine') {
+      try {
+        const pool = get(`SELECT name FROM pool WHERE id=?`, [d.pool_id]);
+        run(`INSERT INTO notification (id,type,title,message,related_id,link_module) VALUES (?,?,?,?,?,?)`,
+          [genId(), 'pool_non_compliance', 'Non-Compliant Pool Test',
+            `Pool "${pool?.name || 'Unknown'}" failed compliance testing. Immediate action required.`,
+            d.pool_id, 'poolhistory']);
+      } catch { /* notification table may not exist pre-migration */ }
+    }
     writeAudit({ run, get, all: () => [] }, {
       action: 'test.create',
       entity_type: 'test_result',

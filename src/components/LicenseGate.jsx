@@ -15,22 +15,28 @@ export default function LicenseGate({ children }) {
   const countdown = useLicenceCountdown(status?.expires_at);
 
   async function load() {
-    let s = await dbQuery('licence:status');
-    if (!s?.valid && s?.reason === 'no_licence') {
-      await dbQuery('licence:ensure_trial');
-      s = await dbQuery('licence:status');
-    }
-    setStatus(s);
     try {
-      const info = await dbQuery('licence:file_info');
-      setFileInfo(info);
-    } catch { /* ignore */ }
-    if (s?.valid && s?.isTrial) {
+      let s = await dbQuery('licence:status');
+      if (!s?.valid && s?.reason === 'no_licence') {
+        await dbQuery('licence:ensure_trial');
+        s = await dbQuery('licence:status');
+      }
+      setStatus(s);
       try {
-        if (!localStorage.getItem('facilityos_trial_welcome')) setTrialWelcome(true);
+        const info = await dbQuery('licence:file_info');
+        setFileInfo(info);
       } catch { /* ignore */ }
+      if (s?.valid && s?.isTrial) {
+        try {
+          if (!localStorage.getItem('facilityos_trial_welcome')) setTrialWelcome(true);
+        } catch { /* ignore */ }
+      }
+    } catch (e) {
+      console.error('[LicenseGate]', e);
+      setStatus({ valid: false, reason: 'server_error' });
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   useEffect(() => { load(); }, []);

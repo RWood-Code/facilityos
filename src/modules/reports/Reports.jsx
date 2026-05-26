@@ -3,6 +3,7 @@ import { dbQuery } from '../../hooks/useDb';
 import { useAppStore } from '../../store/appStore';
 import { PageHeader, ComplianceBadge, StatCard, Spinner, TabBar, Btn } from '../../components/ui';
 import TrendChart from '../../components/TrendChart';
+import CustomReportBuilder from './CustomReportBuilder';
 import { checkOverallCompliance } from '../../utils/compliance';
 import { parseCustomLimits, isWaterTestPool } from '../../utils/poolUtils';
 import { exportRowsToCsv } from '../../utils/download';
@@ -158,6 +159,7 @@ export default function Reports() {
           { value: 'tests', label: 'Test Log' },
           { value: 'trends', label: 'Parameter Trends' },
           { value: 'maintenance', label: 'Maintenance' },
+          { value: 'builder', label: 'Custom Builder' },
           { value: 'export', label: 'Data Export' },
           { value: 'saved', label: 'Saved Reports' },
         ]}
@@ -165,7 +167,9 @@ export default function Reports() {
         onChange={setTab}
       />
 
-      {loading ? (
+      {tab === 'builder' ? (
+        <CustomReportBuilder onBack={() => setTab('compliance')} />
+      ) : loading ? (
         <Spinner />
       ) : (
         <>

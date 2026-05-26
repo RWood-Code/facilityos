@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { addWeeks, subWeeks } from 'date-fns';
-import { dbQuery } from '../../hooks/useDb';
-import { useAppStore } from '../../store/appStore';
+import { addWeeks, subWeeks, format } from 'date-fns';
+import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
+import { dbQuery } from '../../hooks/useDb';import { useAppStore } from '../../store/appStore';
 import { downloadCsv } from '../../utils/download';
-import { PageHeader, Btn, TabBar, Spinner } from '../../components/ui';
-import { weekRange, generateRecurDates, defaultShiftSeed, shiftUpdatePayload } from './rosterUtils';
+import { PageHeader, Btn, TabBar, Spinner } from '../../components/ui';import { weekRange, generateRecurDates, defaultShiftSeed, shiftUpdatePayload } from './rosterUtils';
 import WeekSummaryBar from './WeekSummaryBar';
 import WeekGrid from './WeekGrid';
 import ShiftModal from './ShiftModal';
@@ -193,40 +192,63 @@ export default function Rostering() {
   }
 
   return (
-    <div>
-      <PageHeader
-        title="Staff Rostering"
-        subtitle="RosterIt-style scheduling with pay codes, timesheets, and bespoke payroll export"
-        actions={
-          <div className="flex gap-2 flex-wrap">
-            <Btn variant="secondary" size="sm" onClick={() => setAnchor(subWeeks(anchor, 1))}>← Week</Btn>
-            <Btn variant="secondary" size="sm" onClick={() => setAnchor(new Date())}>Today</Btn>
-            <Btn variant="secondary" size="sm" onClick={() => setAnchor(addWeeks(anchor, 1))}>Week →</Btn>
+    <div className="-m-4 md:-m-6 lg:-m-8 min-h-full bg-gradient-to-br from-violet-50/40 via-white to-cyan-50/30">
+      <div className="p-4 md:p-6 lg:p-8">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-gradient-to-br from-violet-600 to-violet-700 rounded-xl shadow-sm">
+              <Calendar className="w-7 h-7 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Staff Rostering</h1>
+              <p className="text-sm text-gray-500">Shifts, pay codes, timesheets & payroll export</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <div className="flex rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm">
+              <Btn variant="ghost" size="sm" className="rounded-none" onClick={() => setAnchor(subWeeks(anchor, 1))}>
+                <ChevronLeft className="w-4 h-4" />
+              </Btn>
+              <Btn variant="ghost" size="sm" className="rounded-none border-x border-gray-200" onClick={() => setAnchor(new Date())}>
+                Today
+              </Btn>
+              <Btn variant="ghost" size="sm" className="rounded-none" onClick={() => setAnchor(addWeeks(anchor, 1))}>
+                <ChevronRight className="w-4 h-4" />
+              </Btn>
+            </div>
             <Btn variant="secondary" size="sm" onClick={exportRoster}>Export</Btn>
-            <Btn variant="secondary" size="sm" onClick={() => setPayrollModal(true)}>Payroll export</Btn>
+            <Btn variant="secondary" size="sm" onClick={() => setPayrollModal(true)}>Payroll</Btn>
             <Btn variant="secondary" size="sm" onClick={copyWeek}>Copy week</Btn>
-            <Btn variant="secondary" size="sm" onClick={clearWeek}>Clear week</Btn>
-            <Btn variant="secondary" size="sm" onClick={seedWeek}>Seed template</Btn>
-            <Btn size="sm" onClick={publishWeek}>Publish week</Btn>
+            <Btn variant="secondary" size="sm" onClick={clearWeek}>Clear</Btn>
+            <Btn variant="secondary" size="sm" onClick={seedWeek}>Seed</Btn>
+            <Btn size="sm" onClick={publishWeek}>Publish</Btn>
             <Btn size="sm" onClick={() => handleNewShift(week.week_start, locations[0]?.id)}>+ Shift</Btn>
           </div>
-        }
-      />
+        </div>
+
+        <div className="flex items-center gap-2 mb-4 text-sm">
+          <span className="font-medium text-violet-800">
+            {format(new Date(week.week_start), 'd MMM')} — {format(new Date(week.week_end), 'd MMM yyyy')}
+          </span>
+          {tab === 'schedule' && (
+            <div className="flex gap-1 ml-auto bg-white rounded-lg border border-gray-200 p-0.5 shadow-sm">
+              {[['location', 'By location'], ['staff', 'By staff']].map(([v, l]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setView(v)}
+                  className={`text-xs px-3 py-1.5 rounded-md font-medium transition-colors ${
+                    view === v ? 'bg-violet-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
       <WeekSummaryBar summary={summary} />
-
-      <div className="flex flex-wrap gap-2 mb-4 items-center">
-        <span className="text-sm text-gray-500">Week {week.week_start} — {week.week_end}</span>
-        {tab === 'schedule' && (
-          <div className="flex gap-1 ml-2">
-            {[['location', 'By location'], ['staff', 'By staff']].map(([v, l]) => (
-              <button key={v} type="button" onClick={() => setView(v)}
-                className={`text-xs px-3 py-1.5 rounded-lg ${view === v ? 'bg-slate-800 text-white' : 'bg-gray-100'}`}>{l}</button>
-            ))}
-          </div>
-        )}
-      </div>
-
       <TabBar
         tabs={[
           { value: 'schedule', label: 'Schedule' },
@@ -316,6 +338,7 @@ export default function Rostering() {
           onExported={() => toast('Payroll CSV downloaded')}
         />
       )}
+      </div>
     </div>
   );
 }

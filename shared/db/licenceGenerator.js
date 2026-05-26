@@ -20,6 +20,7 @@ const MODULE_LABELS = {
   reports: 'Reports & Analytics',
   rostering: 'Staff Rostering',
   manager_dashboard: 'Manager View',
+  iltp_poolsafe: 'ILTP & PoolSafe',
 };
 
 function slugCode(text, maxLen = 8) {

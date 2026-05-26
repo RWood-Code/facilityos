@@ -1,12 +1,88 @@
 import React, { useState, useEffect } from 'react';
 import { dbQuery } from '../../hooks/useDb';
 import { useAppStore } from '../../store/appStore';
-import { PageHeader, Btn, Modal, Field, Input, Select, Textarea, Spinner, Empty } from '../../components/ui';
+import { PageHeader, Btn, Modal, Field, Input, Select, Textarea, Spinner, Empty, Card } from '../../components/ui';
 import { format, parseISO, isPast, isToday } from 'date-fns';
 
 const FREQUENCIES = ['daily','weekly','monthly','quarterly','semi_annual','annual'];
 const FREQ_LABELS = { daily:'Daily', weekly:'Weekly', monthly:'Monthly', quarterly:'Quarterly', semi_annual:'Semi-Annual', annual:'Annual' };
 const FREQ_COLORS = { daily:'bg-red-100 text-red-700', weekly:'bg-orange-100 text-orange-700', monthly:'bg-blue-100 text-blue-700', quarterly:'bg-purple-100 text-purple-700', semi_annual:'bg-teal-100 text-teal-700', annual:'bg-gray-100 text-gray-600' };
+
+function BudgetPanel() {
+  const { toast } = useAppStore();
+  const year = new Date().getFullYear();
+  const [summary, setSummary] = useState(null);
+  const [modal, setModal] = useState(false);
+  const [form, setForm] = useState({ period_label: `FY${year}`, year, budget_amount: '', category: '', notes: '' });
+  const [saving, setSaving] = useState(false);
+
+  const load = () => dbQuery('budget:summary', { year }).then(setSummary).catch(() => setSummary(null));
+  useEffect(() => { load(); }, []);
+
+  async function save() {
+    if (!form.period_label || !form.budget_amount) { toast('Period and amount required', 'warn'); return; }
+    setSaving(true);
+    try {
+      await dbQuery('budget:create', { ...form, budget_amount: parseFloat(form.budget_amount) });
+      setModal(false);
+      setForm({ period_label: `FY${year}`, year, budget_amount: '', category: '', notes: '' });
+      load();
+      toast('Budget added');
+    } catch { toast('Save failed', 'error'); }
+    finally { setSaving(false); }
+  }
+
+  if (!summary) return null;
+
+  return (
+    <Card className="mb-6 border-teal-100 bg-gradient-to-r from-teal-50/40 to-white">
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">Maintenance Budget — {year}</h3>
+          <p className="text-2xl font-bold text-gray-900 mt-1">
+            ${Math.round(summary.spent || 0).toLocaleString()}
+            <span className="text-base font-normal text-gray-400"> / ${Math.round(summary.totalBudget || 0).toLocaleString()}</span>
+          </p>
+          <p className="text-xs text-gray-500 mt-1">
+            Based on completed work order parts + labour costs
+          </p>
+        </div>
+        <Btn size="sm" onClick={() => setModal(true)}>+ Add Budget Period</Btn>
+      </div>
+      {summary.totalBudget > 0 && (
+        <div className="h-2.5 bg-gray-200 rounded-full overflow-hidden mb-3">
+          <div
+            className={`h-full rounded-full ${summary.spent > summary.totalBudget ? 'bg-red-500' : 'bg-teal-500'}`}
+            style={{ width: `${Math.min(100, Math.round((summary.spent / summary.totalBudget) * 100))}%` }}
+          />
+        </div>
+      )}
+      {(summary.budgets || []).length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {summary.budgets.map((b) => (
+            <div key={b.id} className="text-sm p-2.5 rounded-lg bg-white/80 border border-gray-100">
+              <span className="font-medium">{b.period_label}</span>
+              {b.category && <span className="text-gray-400"> · {b.category}</span>}
+              <div className="text-teal-700 font-semibold">${Math.round(b.budget_amount).toLocaleString()}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {modal && (
+        <Modal title="Add Budget Period" onClose={() => setModal(false)}>
+          <Field label="Period label" required><Input value={form.period_label} onChange={(e) => setForm({ ...form, period_label: e.target.value })} placeholder="FY2026" /></Field>
+          <Field label="Budget amount ($)" required><Input type="number" value={form.budget_amount} onChange={(e) => setForm({ ...form, budget_amount: e.target.value })} /></Field>
+          <Field label="Category"><Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Optional — Pool Equipment, Gym…" /></Field>
+          <Field label="Notes"><Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+          <div className="flex justify-end gap-2 mt-4">
+            <Btn variant="secondary" onClick={() => setModal(false)}>Cancel</Btn>
+            <Btn disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</Btn>
+          </div>
+        </Modal>
+      )}
+    </Card>
+  );
+}
 
 function ScheduleForm({ schedule, assets, onClose, onSaved }) {
   const { toast } = useAppStore();
@@ -67,6 +143,8 @@ export default function Schedules() {
     <div>
       <PageHeader title="Maintenance Schedules" subtitle="Recurring maintenance tasks and compliance scheduling"
         actions={<Btn onClick={()=>{setEditSched(null);setFormOpen(true);}}>+ New Schedule</Btn>} />
+
+      <BudgetPanel />
 
       {loading ? <Spinner /> : schedules.length===0 ? <Empty icon="📅" title="No schedules" desc="Create maintenance schedules to track recurring tasks" /> : (
         <div className="space-y-3">
