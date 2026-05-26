@@ -1,10 +1,15 @@
 const { autoUpdater } = require('electron-updater');
 const { app } = require('electron');
+const { getInstallVariant } = require('./runtime');
 
 let checkInterval;
 
 function initAutoUpdater(mainWindow) {
   if (!app.isPackaged) return;
+
+  if (getInstallVariant() === 'client') {
+    autoUpdater.channel = 'terminal';
+  }
 
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;

@@ -13,7 +13,7 @@
     "dist": "npm run dist:server",
     "dist:server": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml",
     "dist:client": "npm run build && electron-builder --win --x64 -c electron-builder.client.yml",
-    "dist:all": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml && electron-builder --win --x64 -c electron-builder.client.yml",
+    "dist:all": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml && electron-builder --win --x64 -c electron-builder.client.yml && node scripts/collect-release-assets.js",
     "dist:dir": "npm run build && electron-builder --win --x64 --dir -c electron-builder.server.yml",
     "server": "node server/index.js",
     "rebuild:node": "npm rebuild better-sqlite3",

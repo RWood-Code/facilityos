@@ -16,9 +16,12 @@ npm run dist:all
 Or individually:
 
 ```bash
-npm run dist:server    # → dist-electron/FacilityOS Server Setup *.exe
-npm run dist:client    # → dist-electron/FacilityOS Terminal Setup *.exe
+npm run dist:server    # → dist-electron-server/
+npm run dist:client    # → dist-electron-client/
+npm run dist:all       # both + copies to dist-electron/ for GitHub release
 ```
+
+Release upload must include **both** `.exe` files plus **`latest.yml`** (Server) and **`terminal.yml`** (Terminal) from `dist-electron/`.
 
 `npm run dist` builds the **Server** installer by default.
 
@@ -84,6 +87,8 @@ You should see JSON with `"ok": true`.
 | Blank app window | Re-run `npm run dist:server` |
 | Terminal shows “Data server offline” | Check server PC is on, firewall rule, correct IP URL |
 | Port in use | Close other FacilityOS instances; or change port in Settings |
+| Update check 404 / latest.yml | Upload `latest.yml` + `terminal.yml` with the release assets (see `npm run dist:all`) |
+| Testing 7-day trial shows old licence | Uninstall does not wipe data — delete `%ProgramData%\FacilityOS\data\` for a clean trial on this PC |
 
 ## Optional: data server only (no UI)
 

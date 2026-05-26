@@ -3,7 +3,7 @@ productName: FacilityOS Terminal
 extraMetadata:
   facilityosVariant: client
 directories:
-  output: dist-electron
+  output: dist-electron-client
 files:
   - dist/**/*
   - electron/**/*
@@ -25,9 +25,11 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: FacilityOS Terminal
+  artifactName: FacilityOS.Terminal.Setup.${version}.exe
   installerLanguages:
     - en_US
 publish:
   provider: github
   owner: RWood-Code
   repo: facilityos
+  channel: terminal

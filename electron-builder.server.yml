@@ -3,7 +3,7 @@ productName: FacilityOS Server
 extraMetadata:
   facilityosVariant: server
 directories:
-  output: dist-electron
+  output: dist-electron-server
 files:
   - dist/**/*
   - electron/**/*
@@ -26,6 +26,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: FacilityOS Server
+  artifactName: FacilityOS.Server.Setup.${version}.exe
   installerLanguages:
     - en_US
 publish:
