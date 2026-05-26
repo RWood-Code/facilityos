@@ -16,7 +16,11 @@ export default function ModuleGate({ moduleId, children }) {
   }, [moduleId, settings, licence]);
 
   if (!isModuleAccessible(mod, settings, licence)) {
-    return null;
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
+        This section is not available on your current plan or settings.
+      </div>
+    );
   }
 
   return children;

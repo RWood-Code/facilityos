@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
+const { getServerRuntime } = require('./runtime');
 
 let serverProcess = null;
 let startedPort = null;
@@ -34,10 +35,11 @@ async function startEmbeddedServer(port) {
     'data'
   );
 
-  serverProcess = spawn(process.execPath, [script], {
+  const runtime = getServerRuntime();
+  serverProcess = spawn(runtime.exec, [script], {
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
+      ...runtime.extraEnv,
       FACILITYOS_PORT: String(port),
       FACILITYOS_HOST: '0.0.0.0',
       FACILITYOS_DATA_DIR: dataDir,

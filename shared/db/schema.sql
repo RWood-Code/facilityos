@@ -88,8 +88,6 @@ CREATE TABLE IF NOT EXISTS module_registry (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO setting VALUES ('stripe_enabled','0');
-INSERT OR IGNORE INTO setting VALUES ('stripe_publishable_key','');
 INSERT OR IGNORE INTO setting VALUES ('terminal_id','T1');
 INSERT OR IGNORE INTO setting VALUES ('show_pools','1');
 INSERT OR IGNORE INTO setting VALUES ('show_assets','1');

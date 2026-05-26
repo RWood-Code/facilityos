@@ -9,7 +9,7 @@ export default function StaffSignIn({ onDone }) {
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
 
-  if (isElectron) return null;
+  if (isElectron()) return null;
 
   async function signIn(e) {
     e?.preventDefault();

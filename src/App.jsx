@@ -3,6 +3,7 @@ import { useAppStore } from './store/appStore';
 import { Toasts } from './components/ui';
 import ModuleGate from './components/ModuleGate';
 import UpdateBanner from './components/UpdateBanner';
+import LicenceExpiryBanner, { LicenceExpiryBannerSpacer } from './components/LicenceExpiryBanner';
 import InstallPrompt from './components/InstallPrompt';
 import StaffSignIn from './components/StaffSignIn';
 import MobileNav from './components/MobileNav';
@@ -86,6 +87,14 @@ export default function App() {
   const isMobile = useMediaQuery('(max-width: 1023px)');
 
   useEffect(() => {
+    if (window.facilityos || window.db) {
+      navigator.serviceWorker?.getRegistrations?.()
+        .then((regs) => regs.forEach((r) => r.unregister()))
+        .catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
     const route = parseAppHash();
     if (route.uiMode) setUiMode(route.uiMode);
     if (route.module) setModule(route.module);
@@ -96,7 +105,7 @@ export default function App() {
   }, [currentModule]);
 
   useEffect(() => {
-    if (!isElectron && isMobile && !currentStaff) setShowSignIn(true);
+    if (!isElectron() && isMobile && !currentStaff) setShowSignIn(true);
   }, [isMobile, currentStaff]);
 
   useEffect(() => {
@@ -131,7 +140,9 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-100 overflow-hidden">
+    <>
+      <LicenceExpiryBanner />
+      <div className="flex h-screen bg-slate-100 overflow-hidden">
       <aside className="hidden lg:flex w-60 flex-shrink-0 bg-gradient-to-b from-slate-900 to-slate-800 flex-col overflow-hidden shadow-xl">
         <SidebarContent
           nav={nav}
@@ -168,7 +179,8 @@ export default function App() {
       )}
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {!isElectron && <InstallPrompt />}
+        <LicenceExpiryBannerSpacer />
+        {!isElectron() && <InstallPrompt />}
         <UpdateBanner />
         <header className="h-14 bg-white/90 backdrop-blur border-b border-gray-200/80 flex items-center px-4 md:px-6 gap-3 flex-shrink-0 safe-area-top">
           {isMobile && (
@@ -213,5 +225,6 @@ export default function App() {
         <StaffSignIn onDone={() => setShowSignIn(false)} />
       )}
     </div>
+    </>
   );
 }

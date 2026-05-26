@@ -1,70 +1,75 @@
 import React, { useEffect, useState } from 'react';
+import QRCode from 'react-qr-code';
 import { Btn } from './ui';
 import { checkServerHealth } from '../hooks/useDb';
 import { isElectron } from '../utils/mobileAccess';
 
-function copyText(text, onDone) {
-  navigator.clipboard?.writeText(text).then(() => onDone?.());
-}
-
 export default function MobileAccessPanel() {
   const [health, setHealth] = useState(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     checkServerHealth().then(setHealth);
+    const id = setInterval(() => checkServerHealth().then(setHealth), 5000);
+    return () => clearInterval(id);
   }, []);
 
-  const urls = health?.mobileUrls || [];
-  const webReady = health?.webUiAvailable;
+  const mainUrl = health?.mobileUrls?.[0]?.home || null;
+
+  function copyLink() {
+    if (!mainUrl) return;
+    navigator.clipboard?.writeText(mainUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-      <div>
-        <h3 className="text-sm font-semibold text-gray-900">Mobile & tablet access</h3>
-        <p className="text-xs text-gray-500 mt-1">
-          iPhone, iPad, and steam-room tablets use a browser on the same Wi‑Fi — no App Store install.
-          {isElectron ? ' Build the web UI once with npm run build on the server PC.' : ''}
-        </p>
+    <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-6 max-w-lg">
+      <div className="text-center">
+        <div className="text-3xl mb-2">📱</div>
+        <h3 className="text-lg font-bold text-gray-900">Connect phones & tablets</h3>
+        <p className="text-sm text-gray-500 mt-1">No app store. Works on iPhone, iPad, and Android.</p>
       </div>
 
-      {!webReady && (
-        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
-          Web UI not deployed yet. On the data server PC run <code className="bg-amber-100 px-1 rounded">npm run build</code>, then restart FacilityOS.
-        </div>
-      )}
-
-      {urls.length === 0 ? (
-        <p className="text-xs text-gray-500">
-          LAN addresses will appear here when the data server is running. Ensure port {health?.port || 3847} is allowed through firewall.
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {urls.map((row) => (
-            <div key={row.ip} className="rounded-xl border border-gray-100 bg-gray-50 p-3 space-y-2">
-              <div className="text-xs font-semibold text-gray-700">Network: {row.ip}</div>
-              {[
-                ['Full app', row.home],
-                ['Steam room tablet (kiosk)', row.steamTablet],
-                ['Manager dashboard', row.manager],
-              ].map(([label, url]) => (
-                <div key={label} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
-                  <span className="text-xs text-gray-500 sm:w-40 flex-shrink-0">{label}</span>
-                  <code className="text-xs bg-white border border-gray-200 rounded px-2 py-1 flex-1 break-all">{url}</code>
-                  <Btn variant="secondary" size="sm" className="flex-shrink-0" onClick={() => copyText(url, () => {})}>
-                    Copy
-                  </Btn>
-                </div>
-              ))}
+      {mainUrl ? (
+        <>
+          <div className="flex justify-center">
+            <div className="bg-white p-4 rounded-2xl border-2 border-cyan-200 shadow-md">
+              <QRCode value={mainUrl} size={200} level="M" />
             </div>
-          ))}
+          </div>
+
+          <ol className="text-sm text-gray-700 space-y-3">
+            <li className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-7 h-7 rounded-full bg-cyan-600 text-white text-xs font-bold flex items-center justify-center">1</span>
+              <span>On the phone, join the <strong>same Wi‑Fi</strong> as this computer</span>
+            </li>
+            <li className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-7 h-7 rounded-full bg-cyan-600 text-white text-xs font-bold flex items-center justify-center">2</span>
+              <span>Open the <strong>camera</strong> and scan the QR code above</span>
+            </li>
+            <li className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-7 h-7 rounded-full bg-cyan-600 text-white text-xs font-bold flex items-center justify-center">3</span>
+              <span>On iPhone/iPad: tap <strong>Share → Add to Home Screen</strong> (optional, for quick access)</span>
+            </li>
+          </ol>
+
+          <Btn variant="secondary" className="w-full" onClick={copyLink}>
+            {copied ? 'Link copied!' : 'Copy link to send by text or email'}
+          </Btn>
+        </>
+      ) : (
+        <div className="text-center text-sm text-gray-500 py-6">
+          {isElectron()
+            ? 'Starting… the QR code will appear in a few seconds once this computer is ready.'
+            : 'Open FacilityOS on the main office computer to see the QR code.'}
         </div>
       )}
 
-      <div className="text-xs text-gray-500 space-y-1 border-t border-gray-100 pt-3">
-        <p><strong>Steam tablet:</strong> open the steam-tablet link → Add to Home Screen → enable guided access / kiosk if available.</p>
-        <p><strong>Manager iPhone:</strong> open the manager link → Share → Add to Home Screen for app-like access.</p>
-        <p><strong>Development:</strong> run <code className="bg-gray-100 px-1 rounded">npm run dev:mobile</code> and open http://&lt;PC-IP&gt;:5173 on the device.</p>
-      </div>
+      <p className="text-xs text-gray-400 text-center border-t border-gray-100 pt-4">
+        Staff must be on facility Wi‑Fi. If scanning does not work, ask whoever installed FacilityOS to check the network.
+      </p>
     </div>
   );
 }

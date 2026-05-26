@@ -87,7 +87,7 @@ INSERT OR IGNORE INTO setting VALUES ('show_rostering','1');
 INSERT OR IGNORE INTO setting VALUES ('licence_grace_days','7');
 
 INSERT OR IGNORE INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,is_active) VALUES
-  ('lic1','FACILITYOS-TRIAL-EANC','EA Networks Centre','trial',datetime('now','+365 days'),15,1);
+  ('lic1','FACILITYOS-TRIAL-EVAL','Evaluation','trial',datetime('now','+7 days'),5,1);
 
 INSERT OR IGNORE INTO module_registry (id,module_key,label,enabled,sort_order) VALUES
   ('mod_dosing','dosing','Dosing Calculator',1,5),

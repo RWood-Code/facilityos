@@ -18,34 +18,56 @@ function QualStatus({ expiry }) {
 
 function StaffForm({ staff, onClose, onSaved }) {
   const { toast } = useAppStore();
-  const [form, setForm] = useState(staff || { first_name:'', last_name:'', email:'', phone:'', role:'lifeguard', status:'active', pin:'', nzrrp_number:'', nzrrp_expiry:'', notes:'' });
+  const [form, setForm] = useState(staff || {
+    first_name: '', last_name: '', email: '', phone: '', role: 'lifeguard', status: 'active',
+    pin: '', nzrrp_number: '', nzrrp_expiry: '', notes: '',
+    employee_number: '', base_hourly_rate: '', default_pay_component_id: '', employment_type: 'casual',
+  });
+  const [payComponents, setPayComponents] = useState([]);
   const [saving, setSaving] = useState(false);
-  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  useEffect(() => {
+    dbQuery('roster:pay_components').then(setPayComponents).catch(() => {});
+  }, []);
+
   async function save() {
-    if (!form.first_name||!form.last_name) { toast('Name required','warn'); return; }
+    if (!form.first_name || !form.last_name) { toast('Name required', 'warn'); return; }
     setSaving(true);
     try {
-      if (staff?.id) await dbQuery('staff:update', { id: staff.id, ...form });
-      else await dbQuery('staff:create', form);
+      const payload = {
+        ...form,
+        base_hourly_rate: form.base_hourly_rate === '' ? null : parseFloat(form.base_hourly_rate),
+      };
+      if (staff?.id) await dbQuery('staff:update', { id: staff.id, ...payload });
+      else await dbQuery('staff:create', payload);
       toast(staff ? 'Staff updated' : 'Staff member added');
       onSaved();
-    } catch(e) { toast('Save failed','error'); }
+    } catch (e) { toast('Save failed', 'error'); }
     finally { setSaving(false); }
   }
   return (
-    <Modal title={staff ? 'Edit Staff Member' : 'Add Staff Member'} onClose={onClose}>
+    <Modal title={staff ? 'Edit Staff Member' : 'Add Staff Member'} onClose={onClose} size="lg">
+      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Personal</h4>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="First Name" required><Input value={form.first_name} onChange={e=>set('first_name',e.target.value)} /></Field>
-        <Field label="Last Name" required><Input value={form.last_name} onChange={e=>set('last_name',e.target.value)} /></Field>
-        <Field label="Email"><Input type="email" value={form.email||''} onChange={e=>set('email',e.target.value)} /></Field>
-        <Field label="Phone"><Input value={form.phone||''} onChange={e=>set('phone',e.target.value)} /></Field>
-        <Field label="Role"><Select value={form.role} onChange={e=>set('role',e.target.value)}>{ROLES.map(r=><option key={r} value={r}>{ROLE_LABELS[r]}</option>)}</Select></Field>
-        <Field label="Status"><Select value={form.status} onChange={e=>set('status',e.target.value)}><option value="active">Active</option><option value="inactive">Inactive</option><option value="on_leave">On Leave</option></Select></Field>
-        <Field label="PIN (4 digits)" hint="Used for test entry sign-off"><Input type="password" maxLength={6} value={form.pin||''} onChange={e=>set('pin',e.target.value)} placeholder="••••" /></Field>
-        <Field label="NZRRP Number"><Input value={form.nzrrp_number||''} onChange={e=>set('nzrrp_number',e.target.value)} /></Field>
-        <Field label="NZRRP Expiry"><Input type="date" value={form.nzrrp_expiry||''} onChange={e=>set('nzrrp_expiry',e.target.value)} /></Field>
+        <Field label="First Name" required><Input value={form.first_name} onChange={(e) => set('first_name', e.target.value)} /></Field>
+        <Field label="Last Name" required><Input value={form.last_name} onChange={(e) => set('last_name', e.target.value)} /></Field>
+        <Field label="Email"><Input type="email" value={form.email || ''} onChange={(e) => set('email', e.target.value)} /></Field>
+        <Field label="Phone"><Input value={form.phone || ''} onChange={(e) => set('phone', e.target.value)} /></Field>
+        <Field label="Role"><Select value={form.role} onChange={(e) => set('role', e.target.value)}>{ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}</Select></Field>
+        <Field label="Status"><Select value={form.status} onChange={(e) => set('status', e.target.value)}><option value="active">Active</option><option value="inactive">Inactive</option><option value="on_leave">On Leave</option></Select></Field>
+        <Field label="PIN (4 digits)" hint="Used for test entry sign-off"><Input type="password" maxLength={6} value={form.pin || ''} onChange={(e) => set('pin', e.target.value)} placeholder="••••" /></Field>
+        <Field label="NZRRP Number"><Input value={form.nzrrp_number || ''} onChange={(e) => set('nzrrp_number', e.target.value)} /></Field>
+        <Field label="NZRRP Expiry"><Input type="date" value={form.nzrrp_expiry || ''} onChange={(e) => set('nzrrp_expiry', e.target.value)} /></Field>
       </div>
-      <Field label="Notes"><Textarea rows={2} value={form.notes||''} onChange={e=>set('notes',e.target.value)} /></Field>
+      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-4 mb-2">Pay & roster</h4>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Employee number" hint="Used in payroll CSV export"><Input value={form.employee_number || ''} onChange={(e) => set('employee_number', e.target.value)} placeholder="e.g. E001" /></Field>
+        <Field label="Employment type"><Select value={form.employment_type || 'casual'} onChange={(e) => set('employment_type', e.target.value)}><option value="casual">Casual</option><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option></Select></Field>
+        <Field label="Base hourly rate ($)"><Input type="number" step="0.01" value={form.base_hourly_rate ?? ''} onChange={(e) => set('base_hourly_rate', e.target.value)} placeholder="0.00" /></Field>
+        <Field label="Default pay component"><Select value={form.default_pay_component_id || ''} onChange={(e) => set('default_pay_component_id', e.target.value)}><option value="">— Role default —</option>{payComponents.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</Select></Field>
+      </div>
+      <Field label="Notes"><Textarea rows={2} value={form.notes || ''} onChange={(e) => set('notes', e.target.value)} /></Field>
       <div className="flex justify-end gap-2 mt-2">
         <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
         <Btn disabled={saving} onClick={save}>{saving?'Saving…':staff?'Save Changes':'Add Staff'}</Btn>
@@ -110,6 +132,8 @@ function StaffDetail({ member, onClose, onChanged }) {
             <StatusBadge status={member.status} />
           </div>
           {member.email && <div className="text-sm text-gray-500 mt-1">{member.email}</div>}
+          {member.employee_number && <div className="text-sm text-gray-500">Employee #: {member.employee_number}</div>}
+          {(member.base_hourly_rate != null) && <div className="text-sm text-gray-500">Base rate: ${Number(member.base_hourly_rate).toFixed(2)}/hr · {member.employment_type?.replace('_', ' ')}</div>}
           {member.nzrrp_number && <div className="text-sm text-gray-500">NZRRP: {member.nzrrp_number} <QualStatus expiry={member.nzrrp_expiry} /></div>}
         </div>
       </div>
@@ -190,6 +214,8 @@ export default function Staff() {
               <th className="text-left px-5 py-3">Name</th>
               <th className="text-left px-5 py-3">Role</th>
               <th className="text-left px-5 py-3">Status</th>
+              <th className="text-left px-5 py-3">Employee #</th>
+              <th className="text-left px-5 py-3">Rate</th>
               <th className="text-left px-5 py-3">NZRRP</th>
               <th className="text-left px-5 py-3">Contact</th>
               <th className="px-5 py-3"></th>
@@ -205,6 +231,8 @@ export default function Staff() {
                   </td>
                   <td className="px-5 py-3"><span className={"px-2 py-0.5 rounded-full text-xs font-medium "+(ROLE_COLORS[s.role]||'bg-gray-100 text-gray-600')}>{ROLE_LABELS[s.role]||s.role}</span></td>
                   <td className="px-5 py-3"><StatusBadge status={s.status} /></td>
+                  <td className="px-5 py-3 text-sm font-mono text-gray-600">{s.employee_number || '—'}</td>
+                  <td className="px-5 py-3 text-sm font-mono text-gray-600">{s.base_hourly_rate != null ? `$${Number(s.base_hourly_rate).toFixed(2)}` : '—'}</td>
                   <td className="px-5 py-3">{s.nzrrp_number ? <div><div className="text-xs text-gray-700">{s.nzrrp_number}</div><QualStatus expiry={s.nzrrp_expiry} /></div> : <span className="text-xs text-gray-400">—</span>}</td>
                   <td className="px-5 py-3 text-sm text-gray-500">{s.email||'—'}</td>
                   <td className="px-5 py-3" onClick={e=>e.stopPropagation()}>

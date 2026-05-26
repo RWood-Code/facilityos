@@ -11,6 +11,7 @@ const path = require('path');
 const { FacilityDatabase } = require('./db');
 const { isChannelAllowed } = require('../shared/db/entitlements');
 const { verifyRemoteAccess, readRemoteSettings } = require('../shared/db/remoteAccess');
+const { getDistPath } = require('../electron/paths');
 
 const PORT = Number(process.env.FACILITYOS_PORT || 3847);
 const HOST = process.env.FACILITYOS_HOST || '0.0.0.0';
@@ -124,8 +125,8 @@ function createApp() {
   });
 
   const LICENCE_EXEMPT = new Set([
-    'licence:status', 'licence:activate', 'licence:renew', 'licence:plans',
-    'licence:generate', 'licence:plan_modules',
+    'licence:status', 'licence:activate', 'licence:plans', 'licence:ensure_trial',
+    'licence:plan_modules',
     'licence:set_features', 'licence:sync_modules',
     'settings:get', 'settings:set', 'settings:all', 'health',
     'audit:list', 'modules:list',
@@ -143,7 +144,7 @@ function createApp() {
     }
     const { isLocalOrPrivateRequest } = require('../shared/db/remoteAccess');
     const LOCAL_ADMIN_CHANNELS = new Set([
-      'remote:enable', 'remote:disable', 'remote:rotate_token', 'licence:generate',
+      'remote:enable', 'remote:disable', 'remote:rotate_token',
       'cloud:configure', 'cloud:pairing_code', 'cloud:sync_now', 'cloud:pair', 'cloud:enqueue_demo',
     ]);
     if (LOCAL_ADMIN_CHANNELS.has(channel) && !isLocalOrPrivateRequest(req)) {
@@ -222,7 +223,7 @@ function createApp() {
     }
   });
 
-  const distPath = path.join(__dirname, '../dist');
+  const distPath = getDistPath();
   if (fs.existsSync(path.join(distPath, 'index.html'))) {
     app.use(express.static(distPath));
     app.get('*', (req, res, next) => {

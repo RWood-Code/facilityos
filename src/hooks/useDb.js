@@ -21,7 +21,7 @@ export {
 };
 
 export async function dbQuery(channel, args) {
-  if (isElectron) {
+  if (isElectron()) {
     const result = await window.db.query(channel, args);
     if (!result.ok) {
       if (result.error === 'licence_expired') {
@@ -56,13 +56,13 @@ export async function dbQuery(channel, args) {
 
 export async function checkServerHealth() {
   let base;
-  if (isElectron) {
+  if (isElectron()) {
     base = (await window.facilityos?.getConfig())?.serverUrl;
   } else {
     base = getApiBase();
   }
   if (base === null || base === undefined) {
-    if (isElectron) return { ok: false };
+    if (isElectron()) return { ok: false };
     base = '';
   }
   try {

@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 dist-electron/
+dist-electron-issuer/
 *.tsbuildinfo
 
 # Vite cache
@@ -42,3 +43,6 @@ coverage/
 
 # Electron builder cache
 .cache/
+
+# Licence issuer local registry
+licence-issuer/data/issued.json

@@ -103,8 +103,8 @@ function registerHandlers(h) {
   h('staff:by_pin', ({ get }, pin) => get(`SELECT * FROM staff WHERE pin=? AND status='active'`, [pin]));
   h('staff:create', ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO staff (id,facility_id,first_name,last_name,email,phone,role,status,pin,nzrrp_number,nzrrp_expiry,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, d.facility_id || 'fac1', d.first_name, d.last_name, d.email || null, d.phone || null, d.role || 'lifeguard', d.status || 'active', d.pin || null, d.nzrrp_number || null, d.nzrrp_expiry || null, d.notes || null]);
+    run(`INSERT INTO staff (id,facility_id,first_name,last_name,email,phone,role,status,pin,nzrrp_number,nzrrp_expiry,notes,employee_number,default_pay_component_id,base_hourly_rate,employment_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, d.facility_id || 'fac1', d.first_name, d.last_name, d.email || null, d.phone || null, d.role || 'lifeguard', d.status || 'active', d.pin || null, d.nzrrp_number || null, d.nzrrp_expiry || null, d.notes || null, d.employee_number || null, d.default_pay_component_id || null, d.base_hourly_rate ?? null, d.employment_type || 'casual']);
     return { id };
   });
   h('staff:update', ({ run }, { id, ...d }) => {

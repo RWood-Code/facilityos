@@ -1,0 +1,37 @@
+appId: nz.facility.licence-issuer
+productName: FacilityOS Licence Issuer
+copyright: Copyright © FacilityOS
+directories:
+  output: dist-electron-issuer
+  buildResources: licence-issuer/build
+files:
+  - licence-issuer/dist/**/*
+  - licence-issuer/electron/**/*
+  - licence-issuer/server.js
+  - licence-issuer/server/**/*
+  - shared/db/licenceGenerator.js
+  - shared/db/entitlements.js
+  - node_modules/**/*
+extraMetadata:
+  main: licence-issuer/electron/main.js
+  name: facilityos-licence-issuer
+  version: 1.0.0
+  description: FacilityOS vendor licence key generator
+asar: true
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: nsis
+      arch:
+        - x64
+  signAndEditExecutable: false
+portable:
+  artifactName: FacilityOS-Licence-Issuer-${version}-portable.exe
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: FacilityOS Licence Issuer
+  artifactName: FacilityOS-Licence-Issuer-${version}-Setup.exe

@@ -4,22 +4,32 @@
   "description": "Aquatic & recreation facility operations — multi-terminal, installable",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "dev": "node scripts/ensure-web-ui.js && concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "dev:server": "node server/index.js",
     "dev:web": "concurrently -k \"npm run dev:server\" \"vite\"",
     "dev:mobile": "concurrently -k \"npm run dev:server\" \"vite --host\"",
     "serve:web": "npm run build && node server/index.js",
     "build": "vite build",
-    "dist": "npm run build && electron-builder --win --x64",
-    "dist:dir": "npm run build && electron-builder --win --x64 --dir",
+    "dist": "npm run dist:server",
+    "dist:server": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml",
+    "dist:client": "npm run build && electron-builder --win --x64 -c electron-builder.client.yml",
+    "dist:all": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml && electron-builder --win --x64 -c electron-builder.client.yml",
+    "dist:dir": "npm run build && electron-builder --win --x64 --dir -c electron-builder.server.yml",
     "server": "node server/index.js",
     "rebuild:node": "npm rebuild better-sqlite3",
     "rebuild:electron": "electron-builder install-app-deps",
+    "postinstall": "npm run rebuild:node",
     "predist": "npm run rebuild:electron",
     "licence:generate": "node scripts/generate-licence.js",
+    "issuer:dev": "concurrently -k \"node licence-issuer/server.js\" \"vite --config licence-issuer/vite.config.js\"",
+    "issuer:build": "vite build --config licence-issuer/vite.config.js",
+    "issuer:start": "node licence-issuer/server.js",
+    "issuer:dist": "npm run issuer:build && electron-builder --win --x64 -c licence-issuer/electron-builder.yml",
+    "issuer:dist:portable": "npm run issuer:build && electron-builder --win portable --x64 -c licence-issuer/electron-builder.yml",
     "cloud:relay": "node cloud/relay/index.js",
     "cloud:agent": "node cloud/agent/index.js",
-    "cloud:dev": "concurrently -k \"npm run dev:server\" \"npm run cloud:relay\" \"npm run cloud:agent\""
+    "cloud:dev": "node scripts/check-cloud-server.js && concurrently -k \"npm run cloud:relay\" \"npm run cloud:agent\"",
+    "cloud:dev:full": "concurrently -k \"npm run dev:server\" \"npm run cloud:relay\" \"npm run cloud:agent\""
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
@@ -30,6 +40,7 @@
     "lucide-react": "^0.383.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-qr-code": "^2.0.21",
     "react-router-dom": "^6.23.1",
     "recharts": "^2.12.7",
     "zustand": "^4.5.2"
@@ -56,10 +67,12 @@
       "electron/**/*",
       "server/**/*",
       "shared/**/*",
+      "cloud/**/*",
       "node_modules/**/*"
     ],
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "dist/**/*"
     ],
     "win": {
       "target": [

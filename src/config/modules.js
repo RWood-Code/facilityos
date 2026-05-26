@@ -25,7 +25,7 @@ export const MODULE_REGISTRY = [
   { id: 'steam', label: 'Steam & Sauna', icon: '♨️', section: 'Operations', component: SteamRoom, settingKey: 'show_steam', licenceKey: 'steam' },
   { id: 'workorders', label: 'Work Orders', icon: '📋', section: 'Operations', component: WorkOrders, settingKey: 'show_work_orders', licenceKey: 'workorders' },
   { id: 'schedules', label: 'Maintenance', icon: '📅', section: 'Operations', component: Schedules, settingKey: 'show_maintenance', licenceKey: 'schedules' },
-  { id: 'rostering', label: 'Rostering', icon: '🗓', section: 'People & Assets', component: Rostering, settingKey: 'show_rostering', licenceKey: 'rostering', badge: 'Beta' },
+  { id: 'rostering', label: 'Rostering', icon: '🗓', section: 'People & Assets', component: Rostering, settingKey: 'show_rostering', licenceKey: 'rostering' },
   { id: 'staff', label: 'Staff', icon: '👥', section: 'People & Assets', component: Staff, settingKey: 'show_staff', licenceKey: 'staff' },
   { id: 'assets', label: 'Assets', icon: '⚙', section: 'People & Assets', component: Assets, settingKey: 'show_assets', licenceKey: 'assets' },
   { id: 'reports', label: 'Reports', icon: '📊', section: 'Reporting', component: Reports, settingKey: 'show_reports', licenceKey: 'reports' },

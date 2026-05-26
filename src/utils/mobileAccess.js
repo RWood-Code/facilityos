@@ -2,7 +2,10 @@ const STORAGE_SERVER = 'facilityos_server_url';
 const STORAGE_TERMINAL = 'facilityos_terminal';
 const STORAGE_TOKEN = 'facilityos_access_token';
 
-export const isElectron = typeof window !== 'undefined' && typeof window.db !== 'undefined';
+/** Runtime check — preload APIs exist in packaged desktop shell. */
+export function isElectron() {
+  return typeof window !== 'undefined' && !!(window.db || window.facilityos);
+}
 
 export function getStoredServerUrl() {
   if (typeof window === 'undefined') return null;
@@ -45,7 +48,7 @@ export function setTerminalId(id) {
 
 /** API base for browser clients — empty string = same-origin (/api via proxy or server-hosted UI). */
 export function getApiBase() {
-  if (isElectron) return null;
+  if (isElectron()) return null;
   const stored = getStoredServerUrl();
   if (stored) return stored;
   if (import.meta.env.VITE_API_URL) return String(import.meta.env.VITE_API_URL).replace(/\/$/, '');

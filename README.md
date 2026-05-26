@@ -25,16 +25,18 @@ See [BUILD.md](BUILD.md) for building `FacilityOS Setup 1.0.0.exe`.
 
 ### Multi-terminal setup
 
-| PC | Role | Settings → Terminals |
-|----|------|----------------------|
-| Office / plant room | **Data server** | Role: *Data server* (default). Runs database at `%ProgramData%\FacilityOS\data\` |
-| Pool deck, reception, gym | **Client** | Role: *Client terminal*, URL: `http://<server-ip>:3847` |
+| PC | Installer | Action |
+|----|-------------|--------|
+| Office / plant room | **FacilityOS Server** | Install and run — database starts automatically |
+| Pool deck, reception, gym | **FacilityOS Terminal** | Install → Settings → enter `http://<server-ip>:3847` |
 
 On the server PC, run (as Administrator):
 
 ```powershell
 .\scripts\install-server-firewall.ps1
 ```
+
+Build installers: see [BUILD.md](BUILD.md) (`npm run dist:all`).
 
 ## Architecture
 
@@ -85,9 +87,9 @@ Generate customer licence keys with a module chooser in three ways:
 
 | Method | Use case |
 |--------|----------|
-| **Settings → Licence → Licence issuer** | In-app UI: pick plan, toggle modules, generate key, apply or copy |
+| **Standalone Licence Issuer** (recommended) | `npm run issuer:dev` → http://localhost:3921 — vendor tool with registry for multi-site |
+| **Settings → Licence → Licence issuer** | In-app UI (requires active licence on that install) |
 | **CLI** | `npm run licence:generate -- --org "Customer Name" --plan professional` |
-| **Browser** | Open `scripts/licence-generator.html` offline (no server required) |
 
 CLI examples:
 
@@ -124,18 +126,10 @@ Users see a banner when an update is available: **Download** → **Restart now**
 
 ## Mobile & tablet access
 
-Phones and tablets use a **browser on facility Wi‑Fi** — no app store install. See **[MOBILE.md](MOBILE.md)** for full setup.
+**Staff:** facility Wi‑Fi → scan QR on office PC → optional Add to Home Screen.
 
-| Device | URL | Notes |
-|--------|-----|--------|
-| General mobile | `http://<server-ip>:3847/` | Run `npm run build` on server PC first |
-| Steam room tablet | `…/#steam-tablet` | Kiosk UI — large touch buttons |
-| Manager iPhone | `…/#manager` | Bottom nav + Add to Home Screen |
+**Installer:** use **FacilityOS Server** on the office PC. QR code is on the home screen or **Settings → Phones & tablets**.
 
-Copy-ready links: **Settings → Terminals → Mobile & tablet access**.
-
-Development: `npm run dev:mobile` then open `http://<pc-ip>:5173` on the device.
-
-Remote access: **Settings → Remote** + [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
+See **[MOBILE.md](MOBILE.md)**.
 
 **FacilityOS Cloud** (future hosted relay): [FACILITYOS_CLOUD.md](FACILITYOS_CLOUD.md) — Settings → Cloud pairing scaffold.

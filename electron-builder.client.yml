@@ -1,0 +1,33 @@
+appId: nz.facility.facilityos.client
+productName: FacilityOS Terminal
+extraMetadata:
+  facilityosVariant: client
+directories:
+  output: dist-electron
+files:
+  - dist/**/*
+  - electron/**/*
+  - server/**/*
+  - shared/**/*
+  - node_modules/**/*
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+  - dist/**/*
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: FacilityOS Terminal
+  installerLanguages:
+    - en_US
+publish:
+  provider: github
+  owner: RWood-Code
+  repo: facilityos

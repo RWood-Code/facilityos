@@ -6,25 +6,64 @@ import { MODULE_REGISTRY } from '../../config/modules';
 import { downloadCsv, parseCsv } from '../../utils/download';
 import { listBackups, createBackup, restoreBackup, checkIntegrity, formatBytes } from '../../utils/serverApi';
 import CustomLimitsEditor from '../../components/CustomLimitsEditor';
-import LicenceGenerator from '../../components/LicenceGenerator';
 import MobileAccessPanel from '../../components/MobileAccessPanel';
-import RemoteAccessPanel from '../../components/RemoteAccessPanel';
 import CloudConnectPanel from '../../components/CloudConnectPanel';
 import { limitsToForm, formToLimits } from '../../utils/poolUtils';
 import { isModuleLicensed, getModuleBlockReason } from '../../utils/moduleAccess';
 import { checkServerHealth } from '../../hooks/useDb';
+import { useLicenceCountdown } from '../../hooks/useLicenceCountdown';
+
+function LicenceStatusCard({ licence }) {
+  const countdown = useLicenceCountdown(licence?.expires_at);
+  const isTrial = licence?.isTrial || licence?.plan === 'trial';
+  const tone = !licence?.valid
+    ? 'bg-red-50 border-red-200'
+    : isTrial || licence?.daysRemaining <= 7
+      ? 'bg-amber-50 border-amber-200'
+      : 'bg-emerald-50 border-emerald-200';
+
+  return (
+    <div className={`rounded-xl border p-5 ${tone}`}>
+      <h3 className="font-semibold text-gray-900">
+        {isTrial ? 'Evaluation trial' : 'Subscription status'}
+      </h3>
+      <p className="text-sm mt-2">
+        {licence.valid
+          ? (countdown.expired ? 'Expired' : `${countdown.label} remaining`)
+          : 'Expired or invalid'}
+      </p>
+      <p className="font-mono text-lg mt-2 tabular-nums text-gray-900">{countdown.label}</p>
+      <p className="text-xs text-gray-600 mt-2">Plan: {licence.planLabel || licence.plan} · Key: {licence.licence_key}</p>
+      <p className="text-xs text-gray-600">Expires: {licence.expires_at?.slice(0, 10)} · Max terminals: {licence.max_terminals}</p>
+      {isTrial && licence.valid && (
+        <p className="text-xs text-amber-800 mt-3">
+          Trial access ends automatically. Enter a purchased licence key below before expiry.
+        </p>
+      )}
+    </div>
+  );
+}
 
 export default function Settings() {
   const { toast, setSettings, settings, licence: storeLicence, setLicence: setStoreLicence } = useAppStore();
   const [local, setLocal] = useState({});
   const [pools, setPools] = useState([]);
-  const [tab, setTab] = useState('facility');
+  const [tab, setTab] = useState(() => {
+    try {
+      const t = sessionStorage.getItem('facilityos_settings_tab');
+      if (t) {
+        sessionStorage.removeItem('facilityos_settings_tab');
+        return t;
+      }
+    } catch { /* ignore */ }
+    return 'facility';
+  });
   const [poolForm, setPoolForm] = useState(false);
   const [editPool, setEditPool] = useState(null);
   const [terminalConfig, setTerminalConfig] = useState(null);
   const [health, setHealth] = useState(null);
   const [licence, setLicence] = useState(null);
-  const [licForm, setLicForm] = useState({ key: '', expiry: '', days: '365', plan: 'professional' });
+  const [licForm, setLicForm] = useState({ key: '', expiry: '' });
   const [backups, setBackups] = useState([]);
   const [integrity, setIntegrity] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
@@ -56,6 +95,16 @@ export default function Settings() {
       setAuditLog([]);
     }
   }
+
+  useEffect(() => {
+    const syncTab = () => {
+      const h = window.location.hash.replace(/^#\/?/, '');
+      if (h === 'phones') setTab('phones');
+    };
+    syncTab();
+    window.addEventListener('hashchange', syncTab);
+    return () => window.removeEventListener('hashchange', syncTab);
+  }, []);
 
   useEffect(() => {
     Promise.all([dbQuery('settings:all'), dbQuery('pools:list')]).then(([s, p]) => {
@@ -156,12 +205,11 @@ export default function Settings() {
       <TabBar
         tabs={[
           { value: 'facility', label: 'Facility' },
+          { value: 'phones', label: 'Phones & tablets' },
           { value: 'pools', label: 'Pools' },
           { value: 'modules', label: 'Modules' },
           { value: 'network', label: 'Terminals' },
-          { value: 'remote', label: 'Remote' },
           { value: 'cloud', label: 'Cloud' },
-          { value: 'stripe', label: 'Stripe' },
           { value: 'licence', label: 'Licence' },
           { value: 'data', label: 'Data' },
           { value: 'system', label: 'System' },
@@ -169,6 +217,10 @@ export default function Settings() {
         active={tab}
         onChange={setTab}
       />
+
+      {tab === 'phones' && (
+        <MobileAccessPanel />
+      )}
 
       {tab === 'facility' && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 max-w-xl">
@@ -295,7 +347,7 @@ export default function Settings() {
       )}
 
       {tab === 'network' && terminalConfig && (
-        <div className="space-y-4 max-w-xl">
+        <div className="space-y-4 max-w-2xl">
           <div
             className={`rounded-xl border p-4 ${
               health?.ok ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'
@@ -365,20 +417,12 @@ export default function Settings() {
               <li>Allow port {terminalConfig.serverPort || 3847} through Windows Firewall on the server PC.</li>
             </ol>
           </div>
-          <MobileAccessPanel />
         </div>
       )}
 
       {tab === 'network' && !terminalConfig && (
         <div className="space-y-4 max-w-xl">
           <p className="text-sm text-gray-500">Terminal role settings are available in the installed desktop app.</p>
-          <MobileAccessPanel />
-        </div>
-      )}
-
-      {tab === 'remote' && (
-        <div className="max-w-2xl">
-          <RemoteAccessPanel />
         </div>
       )}
 
@@ -388,53 +432,9 @@ export default function Settings() {
         </div>
       )}
 
-      {tab === 'stripe' && (
-        <div className="space-y-4 max-w-xl">
-          <div
-            className={`rounded-xl border p-4 flex items-center gap-3 ${
-              local.stripe_enabled === '1' ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'
-            }`}
-          >
-            <span className="text-2xl">{local.stripe_enabled === '1' ? '✅' : '⚠️'}</span>
-            <div className="flex-1">
-              <div className="text-sm font-semibold">
-                {local.stripe_enabled === '1' ? 'Stripe enabled' : 'Stripe disabled'}
-              </div>
-              <div className="text-xs text-gray-500">Card-present payments via Stripe Terminal</div>
-            </div>
-            <Btn
-              variant={local.stripe_enabled === '1' ? 'danger' : 'primary'}
-              size="sm"
-              onClick={() => set('stripe_enabled', local.stripe_enabled === '1' ? '0' : '1')}
-            >
-              {local.stripe_enabled === '1' ? 'Disable' : 'Enable'}
-            </Btn>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <Field label="Publishable Key">
-              <Input
-                value={local.stripe_publishable_key || ''}
-                onChange={(e) => set('stripe_publishable_key', e.target.value)}
-                placeholder="pk_test_…"
-              />
-            </Field>
-          </div>
-        </div>
-      )}
-
       {tab === 'licence' && licence && (
         <div className="space-y-4 max-w-2xl">
-          <LicenceGenerator onApplied={async () => {
-            await refreshLicence();
-            toast('Licence applied — modules updated');
-          }} />
-
-          <div className={`rounded-xl border p-5 ${licence.valid ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
-            <h3 className="font-semibold text-gray-900">Subscription status</h3>
-            <p className="text-sm mt-2">{licence.valid ? `Active — ${licence.daysRemaining} days remaining` : 'Expired or invalid'}</p>
-            <p className="text-xs text-gray-600 mt-1">Plan: {licence.planLabel || licence.plan} · Key: {licence.licence_key}</p>
-            <p className="text-xs text-gray-600">Expires: {licence.expires_at?.slice(0, 10)} · Max terminals: {licence.max_terminals}</p>
-          </div>
+          <LicenceStatusCard licence={licence} />
 
           {licence.modules && (
             <div className="bg-white rounded-xl border border-gray-200 p-5">
@@ -455,34 +455,39 @@ export default function Settings() {
           )}
 
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h3 className="text-sm font-semibold mb-3">Renew / activate (administrator)</h3>
-            <Field label="Licence key"><Input value={licForm.key} onChange={(e) => setLicForm((f) => ({ ...f, key: e.target.value }))} /></Field>
-            <Field label="Plan">
-              <Select value={licForm.plan} onChange={(e) => setLicForm((f) => ({ ...f, plan: e.target.value }))}>
-                <option value="trial">Trial</option>
-                <option value="standard">Standard</option>
-                <option value="professional">Professional</option>
-                <option value="enterprise">Enterprise</option>
-              </Select>
+            <h3 className="text-sm font-semibold mb-1">Activate licence</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Enter the licence key and expiry date supplied by your vendor.
+            </p>
+            <Field label="Licence key">
+              <Input
+                value={licForm.key}
+                onChange={(e) => setLicForm((f) => ({ ...f, key: e.target.value }))}
+                placeholder="FACILITYOS-PRO-…"
+              />
             </Field>
-            <Field label="Expiry date"><Input type="date" value={licForm.expiry} onChange={(e) => setLicForm((f) => ({ ...f, expiry: e.target.value }))} /></Field>
-            <div className="flex gap-2 flex-wrap">
-              <Btn onClick={async () => {
+            <Field label="Expiry date">
+              <Input
+                type="date"
+                value={licForm.expiry}
+                onChange={(e) => setLicForm((f) => ({ ...f, expiry: e.target.value }))}
+              />
+            </Field>
+            <Btn
+              onClick={async () => {
+                if (!licForm.key.trim() || !licForm.expiry) return;
                 await dbQuery('licence:activate', {
-                  licence_key: licForm.key,
+                  licence_key: licForm.key.trim(),
                   expires_at: licForm.expiry,
-                  plan: licForm.plan,
+                  organisation: local.facility_name || 'Licensed facility',
                 });
                 await refreshLicence();
-                toast('Licence activated — modules updated for plan');
-              }}>Activate</Btn>
-              <Btn variant="secondary" onClick={async () => {
-                await dbQuery('licence:renew', { days: parseInt(licForm.days, 10) || 365 });
-                await refreshLicence();
-                toast('Extended');
-              }}>Extend {licForm.days} days</Btn>
-            </div>
-            <Field label="Extension days"><Input type="number" value={licForm.days} onChange={(e) => setLicForm((f) => ({ ...f, days: e.target.value }))} /></Field>
+                toast('Licence activated');
+              }}
+              disabled={!licForm.key.trim() || !licForm.expiry}
+            >
+              Activate licence
+            </Btn>
           </div>
         </div>
       )}

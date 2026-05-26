@@ -7,14 +7,46 @@ const {
   ALL_MODULE_KEYS,
 } = require('./entitlements');
 const {
-  buildLicencePackage,
   MODULE_LABELS,
   modulesFromPlan,
-  defaultExpiryDate,
+  generateLicenceKey,
 } = require('./licenceGenerator');
+const { shiftHours, resolvePaySnapshot, computeAmount } = require('./rosterPay');
 
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+const ROSTER_SHIFT_FIELDS = new Set([
+  'facility_id', 'location_id', 'role_id', 'shift_date', 'start_time', 'end_time',
+  'break_minutes', 'notes', 'status', 'is_open', 'pay_component_id', 'headcount',
+]);
+
+function patchRosterShift(d) {
+  const patch = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (!ROSTER_SHIFT_FIELDS.has(k)) continue;
+    if (k === 'is_open') patch[k] = v ? 1 : 0;
+    else if (k === 'headcount') patch[k] = Math.max(1, parseInt(v, 10) || 1);
+    else patch[k] = v;
+  }
+  return patch;
+}
+
+function syncShiftOpenState(run, get, shift_id) {
+  const shift = get(`SELECT headcount FROM roster_shift WHERE id=?`, [shift_id]);
+  const headcount = Math.max(1, shift?.headcount || 1);
+  const active = get(`SELECT COUNT(*) as n FROM roster_assignment WHERE shift_id=? AND status!='cancelled'`, [shift_id])?.n || 0;
+  run(`UPDATE roster_shift SET is_open=? WHERE id=?`, [active < headcount ? 1 : 0, shift_id]);
+}
+
+function planFromLicenceKey(licenceKey) {
+  const key = String(licenceKey || '').toUpperCase();
+  if (key.includes('-PRO-')) return 'professional';
+  if (key.includes('-ENT-')) return 'enterprise';
+  if (key.includes('-STD-')) return 'standard';
+  if (key.includes('-TRIAL-')) return 'trial';
+  return 'standard';
 }
 
 function registerExtendedHandlers(h) {
@@ -26,18 +58,31 @@ function registerExtendedHandlers(h) {
   h('licence:status', ({ get }) => {
     const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
     if (!lic) {
-      return { valid: false, reason: 'no_licence', daysRemaining: 0, modules: resolveModuleAccess('trial', null) };
+      return {
+        valid: false,
+        reason: 'no_licence',
+        daysRemaining: 0,
+        msRemaining: 0,
+        isTrial: false,
+        modules: resolveModuleAccess('trial', null),
+      };
     }
     const expires = new Date(lic.expires_at);
     const now = new Date();
-    const daysRemaining = Math.ceil((expires - now) / 86400000);
-    const grace = parseInt((get(`SELECT value FROM setting WHERE key='licence_grace_days'`) || {}).value || '7', 10);
+    const msRemaining = expires.getTime() - now.getTime();
+    const daysRemaining = Math.ceil(msRemaining / 86400000);
+    const isTrial = lic.plan === 'trial';
+    const grace = isTrial
+      ? 0
+      : parseInt((get(`SELECT value FROM setting WHERE key='licence_grace_days'`) || {}).value || '7', 10);
     const valid = daysRemaining >= -grace;
     const modules = resolveModuleAccess(lic.plan, lic.features);
     return {
       valid,
       daysRemaining,
+      msRemaining,
       graceDays: grace,
+      isTrial,
       plan: lic.plan,
       planLabel: PLAN_LABELS[lic.plan] || lic.plan,
       organisation: lic.organisation,
@@ -47,7 +92,23 @@ function registerExtendedHandlers(h) {
       modules,
       moduleList: ALL_MODULE_KEYS.filter((k) => modules[k]),
       reason: valid ? null : 'expired',
+      inGrace: !isTrial && daysRemaining < 0 && daysRemaining >= -grace,
     };
+  });
+
+  h('licence:ensure_trial', ({ run, get }) => {
+    const existing = get(`SELECT id FROM licence WHERE is_active=1 LIMIT 1`);
+    if (existing) return { created: false };
+    const { generateLicenceKey } = require('./licenceGenerator');
+    const licence_key = generateLicenceKey({ organisation: 'Evaluation', plan: 'trial' });
+    const modules = resolveModuleAccess('trial', null);
+    run(
+      `INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,is_active,last_validated)
+       VALUES (?,?,?,?,datetime('now','+7 days'),?,1,datetime('now'))`,
+      [genId(), licence_key, 'Evaluation', 'trial', 5],
+    );
+    syncSettingsFromModules(run, modules);
+    return { created: true, licence_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10) };
   });
 
   h('licence:plans', () => ({
@@ -56,14 +117,13 @@ function registerExtendedHandlers(h) {
     allModules: ALL_MODULE_KEYS,
   }));
 
-  h('licence:generate', (_db, args = {}) => buildLicencePackage({
-    organisation: args.organisation,
-    siteCode: args.site_code,
-    plan: args.plan || 'professional',
-    expires_at: args.expires_at || defaultExpiryDate(args.years || 1),
-    max_terminals: args.max_terminals || 10,
-    modules: args.modules,
-  }));
+  h('licence:generate', () => {
+    throw new Error('Licence generation is vendor-only. Contact your FacilityOS supplier.');
+  });
+
+  h('licence:renew', () => {
+    throw new Error('Licence renewal requires a new key from your vendor.');
+  });
 
   h('licence:plan_modules', (_db, { plan } = {}) => ({
     plan: plan || 'standard',
@@ -95,7 +155,7 @@ function registerExtendedHandlers(h) {
   });
 
   h('licence:activate', ({ run, get }, { licence_key, expires_at, organisation, plan, max_terminals, features, modules }) => {
-    const selectedPlan = plan || 'standard';
+    const selectedPlan = plan || planFromLicenceKey(licence_key);
     const existing = get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
     let featuresJson = features ? (typeof features === 'string' ? features : JSON.stringify(features)) : null;
     if (!featuresJson && modules && typeof modules === 'object') {
@@ -122,16 +182,6 @@ function registerExtendedHandlers(h) {
       details: { expires_at, organisation, plan: selectedPlan, modules: effectiveModules },
     });
     return { ok: true, modules: effectiveModules };
-  });
-
-  h('licence:renew', ({ run }, { days, licence_key }) => {
-    const d = days || 365;
-    if (licence_key) {
-      run(`UPDATE licence SET expires_at=datetime(expires_at, '+'||?||' days'), last_validated=datetime('now') WHERE licence_key=?`, [d, licence_key]);
-    } else {
-      run(`UPDATE licence SET expires_at=datetime(expires_at, '+'||?||' days'), last_validated=datetime('now') WHERE is_active=1`, [d]);
-    }
-    return { ok: true };
   });
 
   h('saved_reports:list', ({ all }) => all(`SELECT * FROM saved_report ORDER BY created_at DESC`));
@@ -187,39 +237,84 @@ function registerExtendedHandlers(h) {
     return { csv: lines.join('\n'), filename: `roster-${week_start}.csv`, count: rows.length };
   });
 
-  const shiftHours = (start, end, breakMin = 0) => {
-    const [sh, sm] = (start || '0:0').split(':').map(Number);
-    const [eh, em] = (end || '0:0').split(':').map(Number);
-    return Math.max(0, (eh * 60 + em - sh * 60 - sm - breakMin) / 60);
-  };
-
-  h('export:payroll', ({ all }, { week_start, week_end } = {}) => {
-    const rows = all(`
-      SELECT rs.shift_date, rs.start_time, rs.end_time,
-        rl.name as location, rr.name as role,
-        s.first_name||' '||s.last_name as staff_name, s.role as staff_role,
-        ra.pay_rate, ra.pay_type, ra.status
-      FROM roster_shift rs
-      LEFT JOIN roster_location rl ON rl.id=rs.location_id
-      LEFT JOIN roster_role rr ON rr.id=rs.role_id
-      LEFT JOIN roster_assignment ra ON ra.shift_id=rs.id AND ra.status!='cancelled'
-      LEFT JOIN staff s ON s.id=ra.staff_id
-      WHERE rs.shift_date>=? AND rs.shift_date<=?
-      ORDER BY rs.shift_date, rs.start_time, staff_name
-    `, [week_start, week_end]);
-    const headers = ['shift_date', 'start_time', 'end_time', 'location', 'role', 'staff_name', 'staff_role', 'hours_scheduled', 'pay_rate', 'pay_type', 'estimated_pay', 'status'];
+  h('export:payroll', ({ all }, { week_start, week_end, source } = {}) => {
+    const useApproved = source === 'approved';
+    let rows;
+    if (useApproved) {
+      rows = all(`
+        SELECT te.work_date as shift_date, rs.start_time, rs.end_time, rs.break_minutes,
+          rl.name as location, rr.name as role,
+          s.employee_number, s.first_name||' '||s.last_name as staff_name,
+          pc.export_code as pay_component_code, pc.name as pay_component_name,
+          pc.rate_multiplier, te.hours, ra.pay_rate, ra.pay_type,
+          rs.status as roster_status, te.status as timesheet_status
+        FROM timesheet_entry te
+        JOIN staff s ON s.id=te.staff_id
+        LEFT JOIN roster_shift rs ON rs.id=te.shift_id
+        LEFT JOIN roster_location rl ON rl.id=rs.location_id
+        LEFT JOIN roster_role rr ON rr.id=rs.role_id
+        LEFT JOIN roster_assignment ra ON ra.shift_id=te.shift_id AND ra.staff_id=te.staff_id AND ra.status!='cancelled'
+        LEFT JOIN pay_component pc ON pc.id=COALESCE(te.pay_component_id, ra.pay_component_id, rs.pay_component_id)
+        WHERE te.work_date>=? AND te.work_date<=? AND te.status='approved'
+        ORDER BY te.work_date, rs.start_time, staff_name
+      `, [week_start, week_end]);
+    } else {
+      rows = all(`
+        SELECT rs.shift_date, rs.start_time, rs.end_time, rs.break_minutes,
+          rl.name as location, rr.name as role,
+          s.employee_number, s.first_name||' '||s.last_name as staff_name,
+          pc.export_code as pay_component_code, pc.name as pay_component_name,
+          pc.rate_multiplier, ra.pay_rate, ra.pay_type, rs.status as roster_status,
+          COALESCE(te.status, 'scheduled') as timesheet_status
+        FROM roster_shift rs
+        LEFT JOIN roster_location rl ON rl.id=rs.location_id
+        LEFT JOIN roster_role rr ON rr.id=rs.role_id
+        LEFT JOIN roster_assignment ra ON ra.shift_id=rs.id AND ra.status!='cancelled'
+        LEFT JOIN staff s ON s.id=ra.staff_id
+        LEFT JOIN pay_component pc ON pc.id=COALESCE(ra.pay_component_id, rs.pay_component_id)
+        LEFT JOIN timesheet_entry te ON te.shift_id=rs.id AND te.staff_id=ra.staff_id
+        WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.id IS NOT NULL
+        ORDER BY rs.shift_date, rs.start_time, staff_name
+      `, [week_start, week_end]);
+    }
+    const headers = [
+      'employee_number', 'staff_name', 'work_date', 'pay_component_code', 'pay_component_name',
+      'hours', 'rate', 'amount', 'location', 'role', 'shift_start', 'shift_end',
+      'roster_status', 'timesheet_status',
+    ];
     const lines = [headers.join(',')];
     rows.forEach((r) => {
-      const hours = shiftHours(r.start_time, r.end_time);
+      const hours = useApproved ? (r.hours || 0) : shiftHours(r.start_time, r.end_time, r.break_minutes || 0);
       const rate = r.pay_rate || 0;
+      const mult = r.rate_multiplier || 1;
       const enriched = {
-        ...r,
-        hours_scheduled: hours.toFixed(2),
-        estimated_pay: (hours * rate).toFixed(2),
+        employee_number: r.employee_number || '',
+        staff_name: r.staff_name || '',
+        work_date: r.shift_date,
+        pay_component_code: r.pay_component_code || '',
+        pay_component_name: r.pay_component_name || '',
+        hours: hours.toFixed(2),
+        rate: rate.toFixed(2),
+        amount: computeAmount(hours, rate, mult).toFixed(2),
+        location: r.location || '',
+        role: r.role || '',
+        shift_start: r.start_time || '',
+        shift_end: r.end_time || '',
+        roster_status: r.roster_status || '',
+        timesheet_status: r.timesheet_status || '',
       };
       lines.push(headers.map((k) => csvEscape(enriched[k])).join(','));
     });
     return { csv: lines.join('\n'), filename: `payroll-${week_start}-to-${week_end}.csv`, count: rows.length };
+  });
+
+  h('export:payroll_preview', ({ all }, { week_start, week_end, source } = {}) => {
+    const useApproved = source === 'approved';
+    const sql = useApproved
+      ? `SELECT COUNT(*) as n FROM timesheet_entry WHERE work_date>=? AND work_date<=? AND status='approved'`
+      : `SELECT COUNT(*) as n FROM roster_assignment ra JOIN roster_shift rs ON rs.id=ra.shift_id WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'`;
+    const row = all(sql, [week_start, week_end])[0];
+    return { count: row?.n || 0, source: useApproved ? 'approved' : 'scheduled' };
   });
 
   h('import:staff', ({ run, get }, { rows }) => {
@@ -232,6 +327,35 @@ function registerExtendedHandlers(h) {
       imported++;
     });
     return { imported };
+  });
+
+  // ── Pay components ──
+  h('roster:pay_components', ({ all }, { include_inactive } = {}) => {
+    let sql = `SELECT * FROM pay_component WHERE 1=1`;
+    if (!include_inactive) sql += ` AND is_active=1`;
+    return all(sql + ` ORDER BY sort_order, code`);
+  });
+
+  h('roster:pay_component_save', ({ run, get }, d) => {
+    const id = d.id || genId();
+    const existing = get(`SELECT id FROM pay_component WHERE id=?`, [id]);
+    if (existing) {
+      run(`UPDATE pay_component SET code=?, name=?, category=?, default_rate=?, rate_multiplier=?, export_code=?, is_active=?, sort_order=? WHERE id=?`,
+        [d.code, d.name, d.category || 'earning', d.default_rate || 0, d.rate_multiplier ?? 1,
+          d.export_code || d.code, d.is_active != null ? (d.is_active ? 1 : 0) : 1, d.sort_order || 0, id]);
+    } else {
+      run(`INSERT INTO pay_component (id,code,name,category,default_rate,rate_multiplier,export_code,is_active,sort_order) VALUES (?,?,?,?,?,?,?,?,?)`,
+        [id, d.code, d.name, d.category || 'earning', d.default_rate || 0, d.rate_multiplier ?? 1,
+          d.export_code || d.code, d.is_active != null ? (d.is_active ? 1 : 0) : 1, d.sort_order || 0]);
+    }
+    return { id };
+  });
+
+  h('roster:resolve_pay', ({ get }, { shift_id, staff_id, pay_component_id } = {}) => {
+    const shift = shift_id ? get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]) : null;
+    const snap = resolvePaySnapshot(get, { shift, staff_id, pay_component_id: pay_component_id || shift?.pay_component_id });
+    const hours = shift ? shiftHours(shift.start_time, shift.end_time, shift.break_minutes || 0) : 0;
+    return { ...snap, hours, amount: computeAmount(hours, snap.pay_rate, snap.multiplier) };
   });
 
   // ── Roster locations & roles ──
@@ -249,10 +373,12 @@ function registerExtendedHandlers(h) {
   });
 
   h('roster:shifts', ({ all }, { week_start, week_end, facility_id } = {}) => all(`
-    SELECT rs.*, rl.name as location_name, rr.name as role_name, rr.color as role_color
+    SELECT rs.*, rl.name as location_name, rr.name as role_name, rr.color as role_color,
+      pc.code as pay_code, pc.name as pay_component_name, pc.export_code
     FROM roster_shift rs
     LEFT JOIN roster_location rl ON rl.id=rs.location_id
     LEFT JOIN roster_role rr ON rr.id=rs.role_id
+    LEFT JOIN pay_component pc ON pc.id=rs.pay_component_id
     WHERE rs.shift_date>=? AND rs.shift_date<=?
     ${facility_id ? 'AND rs.facility_id=?' : ''}
     ORDER BY rs.shift_date, rs.start_time
@@ -260,25 +386,66 @@ function registerExtendedHandlers(h) {
 
   h('roster:assignments', ({ all }, { week_start, week_end } = {}) => all(`
     SELECT ra.*, rs.shift_date, rs.start_time, rs.end_time, rs.location_id, rs.role_id, rs.is_open,
-      s.first_name, s.last_name, s.role as staff_role
+      rs.break_minutes, rs.pay_component_id as shift_pay_component_id,
+      s.first_name, s.last_name, s.role as staff_role, s.employee_number, s.nzrrp_expiry,
+      pc.code as pay_code, pc.export_code
     FROM roster_assignment ra
     JOIN roster_shift rs ON rs.id=ra.shift_id
     JOIN staff s ON s.id=ra.staff_id
+    LEFT JOIN pay_component pc ON pc.id=COALESCE(ra.pay_component_id, rs.pay_component_id)
     WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'
   `, [week_start, week_end]));
 
-  h('roster:shift_create', ({ run }, d) => {
+  h('roster:week_summary', ({ all, get }, { week_start, week_end } = {}) => {
+    const shifts = all(`SELECT * FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
+    const assignments = all(`
+      SELECT ra.*, rs.start_time, rs.end_time, rs.break_minutes, rs.status as shift_status,
+        pc.rate_multiplier
+      FROM roster_assignment ra
+      JOIN roster_shift rs ON rs.id=ra.shift_id
+      LEFT JOIN pay_component pc ON pc.id=COALESCE(ra.pay_component_id, rs.pay_component_id)
+      WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'
+    `, [week_start, week_end]);
+    const openCount = shifts.filter((s) => s.is_open === 1).length;
+    const published = shifts.filter((s) => s.status === 'published').length;
+    let totalHours = 0;
+    let labourCost = 0;
+    assignments.forEach((a) => {
+      const h = shiftHours(a.start_time, a.end_time, a.break_minutes || 0);
+      totalHours += h;
+      labourCost += computeAmount(h, a.pay_rate || 0, a.rate_multiplier || 1);
+    });
+    const pendingLeave = get(`SELECT COUNT(*) as n FROM roster_leave WHERE status='pending'`)?.n || 0;
+    return {
+      total_shifts: shifts.length,
+      open_shifts: openCount,
+      published_pct: shifts.length ? Math.round((published / shifts.length) * 100) : 0,
+      scheduled_hours: Math.round(totalHours * 100) / 100,
+      labour_cost: Math.round(labourCost * 100) / 100,
+      pending_leave: pendingLeave,
+    };
+  });
+
+  h('roster:shift_create', ({ run, get }, d) => {
+    if (!d.pay_component_id) {
+      const role = d.role_id ? get(`SELECT default_pay_component_id FROM roster_role WHERE id=?`, [d.role_id]) : null;
+      d.pay_component_id = role?.default_pay_component_id || get(`SELECT id FROM pay_component WHERE code='ORD' LIMIT 1`)?.id;
+    }
     const id = genId();
-    run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open,pay_component_id,headcount)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, d.facility_id || 'fac1', d.location_id, d.role_id, d.shift_date, d.start_time, d.end_time,
-        d.break_minutes || 0, d.notes || null, d.status || 'draft', d.is_open ? 1 : 0]);
+        d.break_minutes || 0, d.notes || null, d.status || 'draft', d.is_open ? 1 : 0,
+        d.pay_component_id, d.headcount || 1]);
     return { id };
   });
 
-  h('roster:shift_update', ({ run }, { id, ...d }) => {
-    const sets = Object.keys(d).map((k) => `${k}=?`).join(',');
-    run(`UPDATE roster_shift SET ${sets} WHERE id=?`, [...Object.values(d), id]);
+  h('roster:shift_update', ({ run, get }, { id, ...d }) => {
+    const patch = patchRosterShift(d);
+    if (!id || !Object.keys(patch).length) return { id };
+    const sets = Object.keys(patch).map((k) => `${k}=?`).join(',');
+    run(`UPDATE roster_shift SET ${sets} WHERE id=?`, [...Object.values(patch), id]);
+    syncShiftOpenState(run, get, id);
     return { id };
   });
 
@@ -288,37 +455,105 @@ function registerExtendedHandlers(h) {
     return { id };
   });
 
-  h('roster:assign', ({ run, get }, { shift_id, staff_id }) => {
+  h('roster:assign', ({ run, get, all }, { shift_id, staff_id, pay_rate, pay_component_id, replace = false }) => {
     const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
     if (!shift) return { error: 'Shift not found' };
-    const existing = get(`SELECT id FROM roster_assignment WHERE shift_id=? AND staff_id=? AND status!='cancelled'`, [shift_id, staff_id]);
+    const headcount = Math.max(1, shift.headcount || 1);
+    const active = all(`SELECT id, staff_id FROM roster_assignment WHERE shift_id=? AND status!='cancelled'`, [shift_id]);
+    const existing = active.find((a) => a.staff_id === staff_id);
     if (existing) return { id: existing.id };
+
+    if (replace) {
+      active.forEach((a) => run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [a.id]));
+    } else if (active.length >= headcount) {
+      return { error: 'shift_full', message: `Shift is full (${headcount} staff)` };
+    }
+
+    const snap = resolvePaySnapshot(get, { shift, staff_id, pay_component_id: pay_component_id || shift.pay_component_id });
     const id = genId();
-    run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status) VALUES (?,?,?,'assigned')`, [id, shift_id, staff_id]);
-    run(`UPDATE roster_shift SET is_open=0 WHERE id=?`, [shift_id]);
-    return { id };
+    run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
+      [id, shift_id, staff_id, pay_rate != null ? pay_rate : snap.pay_rate, snap.pay_type, snap.pay_component_id]);
+    syncShiftOpenState(run, get, shift_id);
+    return { id, ...snap };
   });
 
-  h('roster:unassign', ({ run }, { assignment_id, shift_id }) => {
-    if (assignment_id) run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [assignment_id]);
-    if (shift_id) run(`UPDATE roster_shift SET is_open=1 WHERE id=?`, [shift_id]);
+  h('roster:unassign', ({ run, get }, { assignment_id, shift_id }) => {
+    let sid = shift_id;
+    if (assignment_id) {
+      const row = get(`SELECT shift_id FROM roster_assignment WHERE id=?`, [assignment_id]);
+      sid = sid || row?.shift_id;
+      run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [assignment_id]);
+    }
+    if (sid) syncShiftOpenState(run, get, sid);
     return { ok: true };
   });
 
-  h('roster:publish_week', ({ run }, { week_start, week_end }) => {
+  h('roster:publish_week', ({ run, all }, { week_start, week_end, generate_timesheets } = {}) => {
     run(`UPDATE roster_shift SET status='published' WHERE shift_date>=? AND shift_date<=? AND status='draft'`, [week_start, week_end]);
+    if (generate_timesheets !== false) {
+      const assignments = all(`
+        SELECT ra.id, ra.shift_id, ra.staff_id, ra.pay_component_id,
+          rs.shift_date, rs.start_time, rs.end_time, rs.break_minutes, rs.pay_component_id as shift_pc
+        FROM roster_assignment ra
+        JOIN roster_shift rs ON rs.id=ra.shift_id
+        WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled' AND rs.status='published'
+      `, [week_start, week_end]);
+      assignments.forEach((a) => {
+        const existing = all(`SELECT id FROM timesheet_entry WHERE shift_id=? AND staff_id=?`, [a.shift_id, a.staff_id])[0];
+        if (existing) return;
+        const hours = shiftHours(a.start_time, a.end_time, a.break_minutes || 0);
+        const tid = genId();
+        run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,pay_component_id) VALUES (?,?,?,?,?,?,?)`,
+          [tid, a.staff_id, a.shift_id, a.shift_date, hours, 'draft', a.pay_component_id || a.shift_pc || null]);
+      });
+    }
     return { ok: true };
   });
 
-  h('roster:bulk_assign', ({ run, all }, { shift_ids, staff_id }) => {
+  h('roster:bulk_assign', ({ run, get, all }, { shift_ids, staff_id }) => {
     const results = [];
     (shift_ids || []).forEach((shift_id) => {
+      const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
+      if (!shift) return;
+      const dup = get(`SELECT id FROM roster_assignment WHERE shift_id=? AND staff_id=? AND status!='cancelled'`, [shift_id, staff_id]);
+      if (dup) return;
+      const snap = resolvePaySnapshot(get, { shift, staff_id, pay_component_id: shift.pay_component_id });
       const id = genId();
-      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status) VALUES (?,?,?,'assigned')`, [id, shift_id, staff_id]);
-      run(`UPDATE roster_shift SET is_open=0 WHERE id=?`, [shift_id]);
+      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
+        [id, shift_id, staff_id, snap.pay_rate, snap.pay_type, snap.pay_component_id]);
+      syncShiftOpenState(run, get, shift_id);
       results.push(id);
     });
     return { assigned: results.length };
+  });
+
+  h('roster:copy_week', ({ run, all }, { week_start, week_end }) => {
+    const shifts = all(`SELECT * FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
+    if (!shifts.length) return { copied: 0, message: 'No shifts to copy' };
+    const dayMs = 7 * 86400000;
+    let count = 0;
+    shifts.forEach((s) => {
+      const newDate = new Date(s.shift_date);
+      newDate.setDate(newDate.getDate() + 7);
+      const shift_date = newDate.toISOString().slice(0, 10);
+      const id = genId();
+      run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open,pay_component_id,headcount)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [id, s.facility_id, s.location_id, s.role_id, shift_date, s.start_time, s.end_time,
+          s.break_minutes || 0, s.notes, 'draft', 1, s.pay_component_id, s.headcount || 1]);
+      count++;
+    });
+    return { copied: count };
+  });
+
+  h('roster:clear_week', ({ run, all }, { week_start, week_end }) => {
+    const shifts = all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
+    shifts.forEach((s) => {
+      run(`DELETE FROM roster_assignment WHERE shift_id=?`, [s.id]);
+      run(`DELETE FROM timesheet_entry WHERE shift_id=?`, [s.id]);
+      run(`DELETE FROM roster_shift WHERE id=?`, [s.id]);
+    });
+    return { deleted: shifts.length };
   });
 
   h('roster:open_shifts', ({ all }, { week_start, week_end } = {}) => all(`
@@ -391,8 +626,11 @@ function registerExtendedHandlers(h) {
     run(`UPDATE roster_shift_offer SET status=? WHERE id=?`, [accept ? 'accepted' : 'declined', id]);
     if (accept) {
       run(`UPDATE roster_assignment SET status='cancelled' WHERE shift_id=? AND staff_id=?`, [offer.shift_id, offer.from_staff_id]);
+      const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [offer.shift_id]);
+      const snap = resolvePaySnapshot(get, { shift, staff_id: offer.to_staff_id, pay_component_id: shift?.pay_component_id });
       const aid = genId();
-      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status) VALUES (?,?,?,'assigned')`, [aid, offer.shift_id, offer.to_staff_id]);
+      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
+        [aid, offer.shift_id, offer.to_staff_id, snap.pay_rate, snap.pay_type, snap.pay_component_id]);
     }
     return { ok: true };
   });
@@ -421,24 +659,83 @@ function registerExtendedHandlers(h) {
   });
 
   h('roster:timesheets', ({ all }, { week_start, week_end } = {}) => all(`
-    SELECT te.*, s.first_name, s.last_name FROM timesheet_entry te
+    SELECT te.*, s.first_name, s.last_name, s.employee_number,
+      rs.start_time, rs.end_time, pc.code as pay_code
+    FROM timesheet_entry te
     JOIN staff s ON s.id=te.staff_id
+    LEFT JOIN roster_shift rs ON rs.id=te.shift_id
+    LEFT JOIN pay_component pc ON pc.id=te.pay_component_id
     WHERE te.work_date>=? AND te.work_date<=?
     ORDER BY te.work_date DESC
   `, [week_start, week_end]));
 
   h('roster:timesheet_create', ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,notes) VALUES (?,?,?,?,?,?,?)`,
-      [id, d.staff_id, d.shift_id || null, d.work_date, d.hours, d.status || 'draft', d.notes || null]);
+    run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,notes,pay_component_id) VALUES (?,?,?,?,?,?,?,?)`,
+      [id, d.staff_id, d.shift_id || null, d.work_date, d.hours, d.status || 'draft', d.notes || null, d.pay_component_id || null]);
     return { id };
   });
 
-  h('roster:seed_week', ({ run, all }, { week_start }) => {
+  h('roster:timesheet_update', ({ run }, { id, ...d }) => {
+    const sets = Object.keys(d).map((k) => `${k}=?`).join(',');
+    run(`UPDATE timesheet_entry SET ${sets} WHERE id=?`, [...Object.values(d), id]);
+    return { id };
+  });
+
+  h('roster:timesheet_approve', ({ run, get }, { id, approved_by, hours }) => {
+    if (hours != null) run(`UPDATE timesheet_entry SET hours=?, status='approved', approved_by=? WHERE id=?`, [hours, approved_by || null, id]);
+    else run(`UPDATE timesheet_entry SET status='approved', approved_by=? WHERE id=?`, [approved_by || null, id]);
+    return { id };
+  });
+
+  h('roster:generate_timesheets', ({ run, all }, { week_start, week_end } = {}) => {
+    const assignments = all(`
+      SELECT ra.shift_id, ra.staff_id, ra.pay_component_id,
+        rs.shift_date, rs.start_time, rs.end_time, rs.break_minutes, rs.pay_component_id as shift_pc
+      FROM roster_assignment ra
+      JOIN roster_shift rs ON rs.id=ra.shift_id
+      WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'
+    `, [week_start, week_end]);
+    let created = 0;
+    assignments.forEach((a) => {
+      const existing = all(`SELECT id FROM timesheet_entry WHERE shift_id=? AND staff_id=?`, [a.shift_id, a.staff_id])[0];
+      if (existing) return;
+      const hours = shiftHours(a.start_time, a.end_time, a.break_minutes || 0);
+      const tid = genId();
+      run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,pay_component_id) VALUES (?,?,?,?,?,?,?)`,
+        [tid, a.staff_id, a.shift_id, a.shift_date, hours, 'draft', a.pay_component_id || a.shift_pc || null]);
+      created++;
+    });
+    return { created };
+  });
+
+  h('roster:staff_conflicts', ({ all }, { staff_id, shift_date, start_time, end_time, exclude_shift_id } = {}) => {
+    const conflicts = [];
+    const overlapping = all(`
+      SELECT rs.*, rl.name as location_name FROM roster_shift rs
+      JOIN roster_assignment ra ON ra.shift_id=rs.id AND ra.status!='cancelled'
+      LEFT JOIN roster_location rl ON rl.id=rs.location_id
+      WHERE ra.staff_id=? AND rs.shift_date=? AND rs.id!=?
+    `, [staff_id, shift_date, exclude_shift_id || '']);
+    overlapping.forEach((s) => conflicts.push({ type: 'overlap', message: `Overlapping shift at ${s.location_name}`, shift_id: s.id }));
+    const onLeave = all(`
+      SELECT * FROM roster_leave WHERE staff_id=? AND status='approved'
+      AND start_date<=? AND end_date>=?
+    `, [staff_id, shift_date, shift_date]);
+    if (onLeave.length) conflicts.push({ type: 'leave', message: 'Approved leave on this date' });
+    const staff = get(`SELECT nzrrp_expiry FROM staff WHERE id=?`, [staff_id]);
+    if (staff?.nzrrp_expiry && staff.nzrrp_expiry < shift_date) {
+      conflicts.push({ type: 'qualification', message: 'NZRRP expired' });
+    }
+    return conflicts;
+  });
+
+  h('roster:seed_week', ({ run, all, get }, { week_start }) => {
     const existing = all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<date(?, '+7 days')`, [week_start, week_start]);
     if (existing.length > 0) return { seeded: 0, message: 'Week already has shifts' };
     const locations = all(`SELECT id FROM roster_location WHERE is_active=1`);
-    const roles = all(`SELECT id FROM roster_role WHERE is_active=1`);
+    const roles = all(`SELECT id, default_pay_component_id FROM roster_role WHERE is_active=1`);
+    const defaultPc = get(`SELECT id FROM pay_component WHERE code='ORD' LIMIT 1`)?.id;
     const days = [0, 1, 2, 3, 4, 5, 6];
     let count = 0;
     days.forEach((d) => {
@@ -450,8 +747,8 @@ function registerExtendedHandlers(h) {
         const role = roles[i % roles.length];
         if (!loc || !role) return;
         const id = genId();
-        run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,status,is_open)
-          VALUES (?,?,?,?,?,?,?,'draft',1)`, [id, 'fac1', loc.id, role.id, shift_date, start, end]);
+        run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,status,is_open,pay_component_id,headcount)
+          VALUES (?,?,?,?,?,?,?,'draft',1,?,1)`, [id, 'fac1', loc.id, role.id, shift_date, start, end, role.default_pay_component_id || defaultPc]);
         count++;
       });
     });

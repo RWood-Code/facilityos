@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const os = require('os');
+const { getInstallVariant } = require('./runtime');
 
 const DEFAULT_PORT = 3847;
 
@@ -10,12 +11,15 @@ function configPath() {
 }
 
 function defaultConfig() {
+  const variant = getInstallVariant();
+  const isClient = variant === 'client';
   return {
-    role: 'server',
-    serverUrl: `http://127.0.0.1:${DEFAULT_PORT}`,
+    role: isClient ? 'client' : 'server',
+    serverUrl: isClient ? '' : `http://127.0.0.1:${DEFAULT_PORT}`,
     serverPort: DEFAULT_PORT,
-    terminalId: `T-${os.hostname().slice(0, 8)}`,
+    terminalId: isClient ? `T-${os.hostname().slice(0, 8)}` : `SERVER-${os.hostname().slice(0, 6)}`,
     facilityName: 'EA Networks Centre',
+    installVariant: variant,
   };
 }
 

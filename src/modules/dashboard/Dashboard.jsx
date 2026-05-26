@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { format } from 'date-fns';
 import { dbQuery } from '../../hooks/useDb';
 import { useAppStore } from '../../store/appStore';
 import { MODULE_REGISTRY } from '../../config/modules';
@@ -8,7 +9,7 @@ import TestEntryModal from '../../components/TestEntryModal';
 import SteamCheckModal from '../../components/SteamCheckModal';
 import { checkOverallCompliance } from '../../utils/compliance';
 import { isWaterTestPool, parseCustomLimits, getPoolTypeMeta } from '../../utils/poolUtils';
-import { format } from 'date-fns';
+import PhoneSetupBanner from '../../components/PhoneSetupBanner';
 
 const MODULE_CARDS = [
   { key: 'show_pools', label: 'Pool Management', desc: 'Test logs & compliance', icon: '🏊', mod: 'pools', color: 'bg-cyan-50 border-cyan-200 text-cyan-700' },
@@ -74,6 +75,7 @@ export default function Dashboard() {
 
   return (
     <div>
+      <PhoneSetupBanner />
       {/* Quick operations — primary testing entry points */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
         <button
