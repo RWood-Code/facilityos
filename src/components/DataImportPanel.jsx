@@ -1,16 +1,31 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { dbQuery } from '../hooks/useDb';
 import { useAppStore } from '../store/appStore';
 import { Btn, Select, Field } from './ui';
 import { downloadCsv, parseCsv } from '../utils/download';
-import { CSV_MODULES } from '../../shared/csvTemplates.js';
+
+const MODULE_OPTIONS = [
+  { key: 'pools', label: 'Pools' },
+  { key: 'staff', label: 'Staff' },
+  { key: 'assets', label: 'Assets' },
+  { key: 'workorders', label: 'Work orders' },
+  { key: 'schedules', label: 'Maintenance schedules' },
+  { key: 'tests', label: 'Water tests' },
+  { key: 'closures', label: 'Pool closures' },
+  { key: 'steamchecks', label: 'Steam room checks' },
+];
 
 export default function DataImportPanel() {
   const { toast } = useAppStore();
   const [moduleKey, setModuleKey] = useState('pools');
   const [busy, setBusy] = useState(false);
+  const [headers, setHeaders] = useState([]);
 
-  const modules = Object.entries(CSV_MODULES).map(([key, m]) => ({ key, label: m.label }));
+  useEffect(() => {
+    dbQuery('import:template', { module: moduleKey })
+      .then((r) => setHeaders(r.headers || []))
+      .catch(() => setHeaders([]));
+  }, [moduleKey]);
 
   async function downloadTemplate() {
     try {
@@ -36,15 +51,14 @@ export default function DataImportPanel() {
       }
       const r = await dbQuery('import:csv', { module: moduleKey, rows });
       const skipped = r.skipped ? ` (${r.skipped} skipped)` : '';
-      toast(`Imported ${r.imported} ${CSV_MODULES[moduleKey]?.label || moduleKey} record(s)${skipped}`);
+      const label = MODULE_OPTIONS.find((m) => m.key === moduleKey)?.label || moduleKey;
+      toast(`Imported ${r.imported} ${label} record(s)${skipped}`);
     } catch (err) {
       toast(err.message || 'Import failed', 'error');
     } finally {
       setBusy(false);
     }
   }
-
-  const mod = CSV_MODULES[moduleKey];
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
@@ -57,16 +71,15 @@ export default function DataImportPanel() {
 
       <Field label="Module">
         <Select value={moduleKey} onChange={(e) => setModuleKey(e.target.value)}>
-          {modules.map((m) => (
+          {MODULE_OPTIONS.map((m) => (
             <option key={m.key} value={m.key}>{m.label}</option>
           ))}
         </Select>
       </Field>
 
-      {mod && (
+      {headers.length > 0 && (
         <p className="text-xs text-gray-500">
-          Columns: {mod.headers.join(', ')}
-          {mod.required?.length ? ` · Required: ${mod.required.join(', ')}` : ''}
+          Columns: {headers.join(', ')}
         </p>
       )}
 
