@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { dbQuery } from '../hooks/useDb';
 import { useAppStore } from '../store/appStore';
 import { Btn, Field, Input } from './ui';
-import { isElectron } from '../utils/mobileAccess';
+import { isElectron, apiUrl, buildAuthHeaders, getTerminalId, setSessionToken } from '../utils/mobileAccess';
 
 export default function StaffSignIn({ onDone }) {
   const { setCurrentStaff, toast } = useAppStore();
@@ -11,11 +11,31 @@ export default function StaffSignIn({ onDone }) {
 
   if (isElectron()) return null;
 
+  async function signInWithSession(pinValue) {
+    const res = await fetch(apiUrl('/api/auth/pin'), {
+      method: 'POST',
+      headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ pin: pinValue, terminalId: getTerminalId() }),
+    });
+    const result = await res.json();
+    if (!result.ok) return null;
+    setSessionToken(result.data.token);
+    return result.data.staff;
+  }
+
   async function signIn(e) {
     e?.preventDefault();
     if (!pin.trim()) return;
     setBusy(true);
     try {
+      const sessionStaff = await signInWithSession(pin.trim());
+      if (sessionStaff) {
+        setCurrentStaff(sessionStaff);
+        sessionStorage.setItem('facilityos_staff_id', sessionStaff.id);
+        onDone?.();
+        return;
+      }
+
       const staff = await dbQuery('staff:by_pin', pin.trim());
       if (!staff) {
         toast('Invalid PIN', 'warn');

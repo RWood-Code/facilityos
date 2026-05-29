@@ -1,0 +1,25 @@
+# Terraform remote state (required before production staging)
+
+Local `terraform.tfstate` contains PostgreSQL passwords and storage connection strings in plaintext. Configure a remote backend before staging deploys.
+
+## Azure Storage backend
+
+1. Create a one-time state storage account (separate from tenant stacks):
+
+```bash
+az group create -n tfstate-rg -l australiaeast
+az storage account create -n fostfstate -g tfstate-rg -l australiaeast --sku Standard_LRS
+az storage container create -n tfstate --account-name fostfstate
+```
+
+2. Copy `backend.tf.example` to `backend.tf` and fill in values, or pass at init:
+
+```bash
+terraform init \
+  -backend-config="resource_group_name=tfstate-rg" \
+  -backend-config="storage_account_name=fostfstate" \
+  -backend-config="container_name=tfstate" \
+  -backend-config="key=facilityos/${SITE_SLUG}.tfstate"
+```
+
+3. Never commit `terraform.tfstate` or `backend.tf` with secrets to git.

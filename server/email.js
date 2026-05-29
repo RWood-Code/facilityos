@@ -10,6 +10,20 @@ function isSmtpConfigured() {
   return Boolean(process.env.SMTP_HOST);
 }
 
+function smtpSummary() {
+  if (!isSmtpConfigured()) return null;
+  return {
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    user: process.env.SMTP_USER || null,
+    from: process.env.SMTP_FROM || process.env.SMTP_USER || 'facilityos@localhost',
+  };
+}
+
+function resetTransporter() {
+  transporter = null;
+}
+
 function getTransporter() {
   if (!isSmtpConfigured()) return null;
   if (!transporter) {
@@ -24,6 +38,17 @@ function getTransporter() {
     });
   }
   return transporter;
+}
+
+async function verifySmtp() {
+  const transport = getTransporter();
+  if (!transport) return { ok: false, reason: 'smtp_not_configured' };
+  try {
+    await transport.verify();
+    return { ok: true, ...smtpSummary() };
+  } catch (e) {
+    return { ok: false, error: e.message, ...smtpSummary() };
+  }
 }
 
 async function sendMail({ to, subject, text, html }) {
@@ -51,4 +76,4 @@ async function sendMail({ to, subject, text, html }) {
   }
 }
 
-module.exports = { isSmtpConfigured, sendMail };
+module.exports = { isSmtpConfigured, smtpSummary, resetTransporter, verifySmtp, sendMail };

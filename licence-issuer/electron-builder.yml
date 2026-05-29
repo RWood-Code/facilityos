@@ -13,7 +13,10 @@ files:
   - shared/db/licenceSigning.js
   - shared/db/licenceKeys.js
   - shared/db/entitlements.js
+  - shared/db/licencePaths.js
   - node_modules/**/*
+  - "!**/*.map"
+  - "!**/test/**"
 extraMetadata:
   main: licence-issuer/electron/main.js
   name: facilityos-licence-issuer

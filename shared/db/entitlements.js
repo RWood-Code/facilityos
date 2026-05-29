@@ -127,24 +127,24 @@ function resolveModuleAccess(plan, featuresJson) {
   return applyFeatureOverrides(getPlanModules(plan || 'standard'), featuresJson);
 }
 
-function syncSettingsFromModules(run, modules) {
-  Object.entries(MODULE_TO_SETTING).forEach(([modKey, settingKey]) => {
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)`, [
+async function syncSettingsFromModules(run, modules) {
+  for (const [modKey, settingKey] of Object.entries(MODULE_TO_SETTING)) {
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES (?, ?)`, [
       settingKey,
       modules[modKey] ? '1' : '0',
     ]);
-  });
+  }
   const registryKeys = {
     rostering: 'rostering',
     dosing: 'dosing',
     steam: 'steam',
     closures: 'closures',
   };
-  Object.entries(registryKeys).forEach(([modKey, registryKey]) => {
+  for (const [modKey, registryKey] of Object.entries(registryKeys)) {
     if (modules[modKey] != null) {
-      run(`UPDATE module_registry SET enabled=? WHERE module_key=?`, [modules[modKey] ? 1 : 0, registryKey]);
+      await run(`UPDATE module_registry SET enabled=? WHERE module_key=?`, [modules[modKey] ? 1 : 0, registryKey]);
     }
-  });
+  }
 }
 
 function channelRequiresModule(channel) {

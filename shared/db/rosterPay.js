@@ -7,27 +7,27 @@ function shiftHours(start, end, breakMin = 0) {
   return Math.max(0, (endM - startM - breakMin) / 60);
 }
 
-function resolvePaySnapshot(get, { shift, staff_id, pay_component_id }) {
+async function resolvePaySnapshot(get, { shift, staff_id, pay_component_id }) {
   const shiftRow = shift || null;
   let pcId = pay_component_id || shiftRow?.pay_component_id || null;
   let staff = null;
   let role = null;
 
   if (staff_id) {
-    staff = get(`SELECT * FROM staff WHERE id=?`, [staff_id]);
+    staff = await get(`SELECT * FROM staff WHERE id=?`, [staff_id]);
   }
   if (shiftRow?.role_id) {
-    role = get(`SELECT * FROM roster_role WHERE id=?`, [shiftRow.role_id]);
+    role = await get(`SELECT * FROM roster_role WHERE id=?`, [shiftRow.role_id]);
   }
 
   if (!pcId && staff?.default_pay_component_id) pcId = staff.default_pay_component_id;
   if (!pcId && role?.default_pay_component_id) pcId = role.default_pay_component_id;
   if (!pcId) {
-    const ord = get(`SELECT id FROM pay_component WHERE code='ORD' AND is_active=1 LIMIT 1`);
+    const ord = await get(`SELECT id FROM pay_component WHERE code='ORD' AND is_active=1 LIMIT 1`);
     pcId = ord?.id || 'pc_ord';
   }
 
-  const pc = get(`SELECT * FROM pay_component WHERE id=?`, [pcId]);
+  const pc = await get(`SELECT * FROM pay_component WHERE id=?`, [pcId]);
   if (!pc) return { pay_component_id: pcId, pay_rate: 0, pay_type: 'hourly', multiplier: 1 };
 
   let rate = staff?.base_hourly_rate;

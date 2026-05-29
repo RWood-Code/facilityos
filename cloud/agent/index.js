@@ -8,6 +8,16 @@ const SERVER_URL = (process.env.FACILITYOS_SERVER_URL || 'http://127.0.0.1:3847'
 const POLL_MS = Number(process.env.FACILITYOS_AGENT_POLL_MS || 30000);
 const TERMINAL_ID = process.env.FACILITYOS_AGENT_TERMINAL || 'cloud-agent';
 
+let lastIdleLogAt = 0;
+const IDLE_LOG_INTERVAL_MS = 5 * 60 * 1000;
+
+function logIdleWaiting() {
+  const now = Date.now();
+  if (now - lastIdleLogAt < IDLE_LOG_INTERVAL_MS) return;
+  lastIdleLogAt = now;
+  console.log('[agent] cloud not paired/enabled — waiting (logs every 5 min until paired)');
+}
+
 async function localQuery(channel, args = {}) {
   const res = await fetch(`${SERVER_URL}/api/query`, {
     method: 'POST',
@@ -29,7 +39,7 @@ async function runSyncCycle() {
   }
 
   if (!creds?.enabled || !creds?.site_id || !creds?.agent_key) {
-    console.log('[agent] cloud not paired/enabled — waiting');
+    logIdleWaiting();
     return;
   }
 

@@ -1,4 +1,5 @@
 const { writeAudit } = require('./audit');
+const { buildUpdateSets, TIMESHEET_UPDATE_COLS } = require('./updateAllowlist');
 const {
   resolveModuleAccess,
   syncSettingsFromModules,
@@ -17,6 +18,10 @@ function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+async function settingValue(get, key) {
+  return (await get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+}
+
 const ROSTER_SHIFT_FIELDS = new Set([
   'facility_id', 'location_id', 'role_id', 'shift_date', 'start_time', 'end_time',
   'break_minutes', 'notes', 'status', 'is_open', 'pay_component_id', 'headcount',
@@ -33,11 +38,12 @@ function patchRosterShift(d) {
   return patch;
 }
 
-function syncShiftOpenState(run, get, shift_id) {
-  const shift = get(`SELECT headcount FROM roster_shift WHERE id=?`, [shift_id]);
+async function syncShiftOpenState(run, get, shift_id) {
+  const shift = await get(`SELECT headcount FROM roster_shift WHERE id=?`, [shift_id]);
   const headcount = Math.max(1, shift?.headcount || 1);
-  const active = get(`SELECT COUNT(*) as n FROM roster_assignment WHERE shift_id=? AND status!='cancelled'`, [shift_id])?.n || 0;
-  run(`UPDATE roster_shift SET is_open=? WHERE id=?`, [active < headcount ? 1 : 0, shift_id]);
+  const countRow = await get(`SELECT COUNT(*) as n FROM roster_assignment WHERE shift_id=? AND status!='cancelled'`, [shift_id]);
+  const active = countRow?.n || 0;
+  await run(`UPDATE roster_shift SET is_open=? WHERE id=?`, [active < headcount ? 1 : 0, shift_id]);
 }
 
 function planFromLicenceKey(licenceKey) {
@@ -49,7 +55,7 @@ function planFromLicenceKey(licenceKey) {
   return 'standard';
 }
 
-function applyVerifiedLicence(db, verified, { source = 'manual' } = {}) {
+async function applyVerifiedLicence(db, verified, { source = 'manual' } = {}) {
   const { run, get } = db;
   const {
     licence_key,
@@ -62,7 +68,7 @@ function applyVerifiedLicence(db, verified, { source = 'manual' } = {}) {
   } = verified;
 
   const selectedPlan = plan || planFromLicenceKey(licence_key);
-  const existing = get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
+  const existing = await get(`SELECT id FROM licence WHERE licence_key=?`, [licence_key]);
   let featuresJson = features ? (typeof features === 'string' ? features : JSON.stringify(features)) : null;
   if (!featuresJson && modules && typeof modules === 'object') {
     const { featuresFromModules } = require('./licenceGenerator');
@@ -75,14 +81,14 @@ function applyVerifiedLicence(db, verified, { source = 'manual' } = {}) {
     : resolveModuleAccess(selectedPlan, featuresJson);
 
   if (existing) {
-    run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, features=COALESCE(?, features), is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
+    await run(`UPDATE licence SET expires_at=?, organisation=?, plan=?, max_terminals=?, features=COALESCE(?, features), is_active=1, last_validated=datetime('now') WHERE licence_key=?`,
       [expires_at, organisation || null, selectedPlan, max_terminals || 10, featuresJson, licence_key]);
   } else {
-    run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,features,is_active,last_validated) VALUES (?,?,?,?,?,?,?,1,datetime('now'))`,
+    await run(`INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,features,is_active,last_validated) VALUES (?,?,?,?,?,?,?,1,datetime('now'))`,
       [genId(), licence_key, organisation || null, selectedPlan, expires_at, max_terminals || 10, featuresJson]);
   }
-  syncSettingsFromModules(run, effectiveModules);
-  writeAudit({ run, get, all: () => [] }, {
+  await syncSettingsFromModules(run, effectiveModules);
+  await writeAudit({ run, get, all: () => [] }, {
     action: 'licence.activate',
     entity_type: 'licence',
     entity_id: licence_key,
@@ -92,13 +98,13 @@ function applyVerifiedLicence(db, verified, { source = 'manual' } = {}) {
 }
 
 function registerExtendedHandlers(h) {
-  h('closures:reopen', ({ run }, { id, reopened_by }) => {
-    run(`UPDATE pool_closure SET reopened_at=datetime('now'), reopened_by=? WHERE id=?`, [reopened_by || null, id]);
+  h('closures:reopen', async ({ run }, { id, reopened_by }) => {
+    await run(`UPDATE pool_closure SET reopened_at=datetime('now'), reopened_by=? WHERE id=?`, [reopened_by || null, id]);
     return { id };
   });
 
-  h('licence:status', ({ get }) => {
-    const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+  h('licence:status', async ({ get }) => {
+    const lic = await get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
     if (!lic) {
       return {
         valid: false,
@@ -116,7 +122,7 @@ function registerExtendedHandlers(h) {
     const isTrial = lic.plan === 'trial';
     const grace = isTrial
       ? 0
-      : parseInt((get(`SELECT value FROM setting WHERE key='licence_grace_days'`) || {}).value || '7', 10);
+      : parseInt((await get(`SELECT value FROM setting WHERE key='licence_grace_days'`) || {}).value || '7', 10);
     const valid = daysRemaining >= -grace;
     const modules = resolveModuleAccess(lic.plan, lic.features);
     return {
@@ -138,48 +144,48 @@ function registerExtendedHandlers(h) {
     };
   });
 
-  h('licence:ensure_trial', ({ run, get }) => {
-    const existing = get(`SELECT id FROM licence WHERE is_active=1 LIMIT 1`);
+  h('licence:ensure_trial', async ({ run, get }) => {
+    const existing = await get(`SELECT id FROM licence WHERE is_active=1 LIMIT 1`);
     if (existing) return { created: false };
     const { generateLicenceKey } = require('./licenceGenerator');
     const licence_key = generateLicenceKey({ organisation: 'Evaluation', plan: 'trial' });
     const modules = resolveModuleAccess('trial', null);
-    run(
+    await run(
       `INSERT INTO licence (id,licence_key,organisation,plan,expires_at,max_terminals,is_active,last_validated)
        VALUES (?,?,?,?,datetime('now','+7 days'),?,1,datetime('now'))`,
       [genId(), licence_key, 'Evaluation', 'trial', 5],
     );
-    syncSettingsFromModules(run, modules);
+    await syncSettingsFromModules(run, modules);
     return { created: true, licence_key, expires_at: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10) };
   });
 
-  h('licence:plans', () => ({
+  h('licence:plans', async () => ({
     plans: Object.entries(PLAN_LABELS).map(([id, label]) => ({ id, label, modules: PLAN_ENTITLEMENTS[id] || [] })),
     moduleLabels: MODULE_LABELS,
     allModules: ALL_MODULE_KEYS,
   }));
 
-  h('licence:generate', () => {
+  h('licence:generate', async () => {
     throw new Error('Licence generation is vendor-only. Contact your FacilityOS supplier.');
   });
 
-  h('licence:renew', () => {
+  h('licence:renew', async () => {
     throw new Error('Licence renewal requires a new key from your vendor.');
   });
 
-  h('licence:plan_modules', (_db, { plan } = {}) => ({
+  h('licence:plan_modules', async (_db, { plan } = {}) => ({
     plan: plan || 'standard',
     modules: modulesFromPlan(plan || 'standard'),
   }));
 
-  h('licence:set_features', ({ run, get }, { features }) => {
-    const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+  h('licence:set_features', async ({ run, get }, { features }) => {
+    const lic = await get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
     if (!lic) throw new Error('No active licence');
     const featuresJson = JSON.stringify(features || {});
-    run(`UPDATE licence SET features=? WHERE id=?`, [featuresJson, lic.id]);
+    await run(`UPDATE licence SET features=? WHERE id=?`, [featuresJson, lic.id]);
     const modules = resolveModuleAccess(lic.plan, featuresJson);
-    syncSettingsFromModules(run, modules);
-    writeAudit({ run, get, all: () => [] }, {
+    await syncSettingsFromModules(run, modules);
+    await writeAudit({ run, get, all: () => [] }, {
       action: 'licence.set_features',
       entity_type: 'licence',
       entity_id: lic.licence_key,
@@ -188,30 +194,30 @@ function registerExtendedHandlers(h) {
     return { modules };
   });
 
-  h('licence:sync_modules', ({ run, get }) => {
-    const lic = get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+  h('licence:sync_modules', async ({ run, get }) => {
+    const lic = await get(`SELECT * FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
     if (!lic) return { ok: false };
     const modules = resolveModuleAccess(lic.plan, lic.features);
-    syncSettingsFromModules(run, modules);
+    await syncSettingsFromModules(run, modules);
     return { modules };
   });
 
-  h('licence:file_info', () => {
+  h('licence:file_info', async () => {
     const { getLicenceFileInfo } = require('./licencePaths');
     return getLicenceFileInfo();
   });
 
-  h('licence:sync_from_file', (db) => {
+  h('licence:sync_from_file', async (db) => {
     const { readLicenceFile } = require('./licencePaths');
     const { parseLicenceDocumentText } = require('./licenceSigning');
     const raw = readLicenceFile();
     if (!raw) return { synced: false, reason: 'no_file' };
     const verified = parseLicenceDocumentText(raw);
-    const result = applyVerifiedLicence(db, verified, { source: 'file' });
+    const result = await applyVerifiedLicence(db, verified, { source: 'file' });
     return { synced: true, ...result };
   });
 
-  h('licence:activate', (db, args = {}) => {
+  h('licence:activate', async (db, args = {}) => {
     const { parseLicenceInput, LICENCE_FORMAT } = require('./licenceSigning');
     const { writeLicenceFile } = require('./licencePaths');
 
@@ -239,46 +245,46 @@ function registerExtendedHandlers(h) {
       }
     }
 
-    return applyVerifiedLicence(db, verified, { source: 'activate' });
+    return await applyVerifiedLicence(db, verified, { source: 'activate' });
   });
 
-  h('saved_reports:list', ({ all }) => all(`SELECT * FROM saved_report ORDER BY created_at DESC`));
-  h('saved_reports:create', ({ run }, d) => {
+  h('saved_reports:list', async ({ all }) => await all(`SELECT * FROM saved_report ORDER BY created_at DESC`));
+  h('saved_reports:create', async ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO saved_report (id,name,report_type,config) VALUES (?,?,?,?)`,
+    await run(`INSERT INTO saved_report (id,name,report_type,config) VALUES (?,?,?,?)`,
       [id, d.name, d.report_type, JSON.stringify(d.config || {})]);
     return { id };
   });
-  h('saved_reports:delete', ({ run }, id) => { run(`DELETE FROM saved_report WHERE id=?`, [id]); return { id }; });
+  h('saved_reports:delete', async ({ run }, id) => { await run(`DELETE FROM saved_report WHERE id=?`, [id]); return { id }; });
 
   const csvEscape = (v) => {
     const s = v == null ? '' : String(v);
     return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
   };
 
-  h('export:tests', ({ all }, { from_date, pool_id } = {}) => {
+  h('export:tests', async ({ all }, { from_date, pool_id } = {}) => {
     let sql = `SELECT tr.*, p.name as pool_name FROM test_result tr JOIN pool p ON p.id=tr.pool_id WHERE 1=1`;
     const p = [];
     if (pool_id) { sql += ` AND tr.pool_id=?`; p.push(pool_id); }
     if (from_date) { sql += ` AND tr.test_date>=?`; p.push(from_date); }
     sql += ` ORDER BY tr.test_date DESC, tr.test_time DESC`;
-    const rows = all(sql, p);
+    const rows = await all(sql, p);
     const headers = ['pool_name', 'test_date', 'test_time', 'tested_by', 'ph', 'free_chlorine', 'total_available_chlorine', 'combined_chlorine', 'temperature', 'is_compliant', 'notes'];
     const lines = [headers.join(',')];
     rows.forEach((r) => lines.push(headers.map((k) => csvEscape(r[k])).join(',')));
     return { csv: lines.join('\n'), filename: `water-tests-${new Date().toISOString().slice(0, 10)}.csv`, count: rows.length };
   });
 
-  h('export:staff', ({ all }) => {
-    const rows = all(`SELECT first_name,last_name,email,phone,role,status,nzrrp_number,nzrrp_expiry FROM staff WHERE status='active' ORDER BY last_name`);
+  h('export:staff', async ({ all }) => {
+    const rows = await all(`SELECT first_name,last_name,email,phone,role,status,nzrrp_number,nzrrp_expiry FROM staff WHERE status='active' ORDER BY last_name`);
     const headers = Object.keys(rows[0] || { first_name: '', last_name: '', email: '', phone: '', role: '', status: '' });
     const lines = [headers.join(',')];
     rows.forEach((r) => lines.push(headers.map((k) => csvEscape(r[k])).join(',')));
     return { csv: lines.join('\n'), filename: 'staff-export.csv', count: rows.length };
   });
 
-  h('export:roster', ({ all }, { week_start, week_end } = {}) => {
-    const rows = all(`
+  h('export:roster', async ({ all }, { week_start, week_end } = {}) => {
+    const rows = await all(`
       SELECT rs.shift_date, rs.start_time, rs.end_time, rl.name as location, rr.name as role,
         s.first_name||' '||s.last_name as staff_name, rs.status, rs.is_open
       FROM roster_shift rs
@@ -295,11 +301,11 @@ function registerExtendedHandlers(h) {
     return { csv: lines.join('\n'), filename: `roster-${week_start}.csv`, count: rows.length };
   });
 
-  h('export:payroll', ({ all }, { week_start, week_end, source } = {}) => {
+  h('export:payroll', async ({ all }, { week_start, week_end, source } = {}) => {
     const useApproved = source === 'approved';
     let rows;
     if (useApproved) {
-      rows = all(`
+      rows = await all(`
         SELECT te.work_date as shift_date, rs.start_time, rs.end_time, rs.break_minutes,
           rl.name as location, rr.name as role,
           s.employee_number, s.first_name||' '||s.last_name as staff_name,
@@ -317,7 +323,7 @@ function registerExtendedHandlers(h) {
         ORDER BY te.work_date, rs.start_time, staff_name
       `, [week_start, week_end]);
     } else {
-      rows = all(`
+      rows = await all(`
         SELECT rs.shift_date, rs.start_time, rs.end_time, rs.break_minutes,
           rl.name as location, rr.name as role,
           s.employee_number, s.first_name||' '||s.last_name as staff_name,
@@ -366,71 +372,71 @@ function registerExtendedHandlers(h) {
     return { csv: lines.join('\n'), filename: `payroll-${week_start}-to-${week_end}.csv`, count: rows.length };
   });
 
-  h('export:payroll_preview', ({ all }, { week_start, week_end, source } = {}) => {
+  h('export:payroll_preview', async ({ all }, { week_start, week_end, source } = {}) => {
     const useApproved = source === 'approved';
     const sql = useApproved
       ? `SELECT COUNT(*) as n FROM timesheet_entry WHERE work_date>=? AND work_date<=? AND status='approved'`
       : `SELECT COUNT(*) as n FROM roster_assignment ra JOIN roster_shift rs ON rs.id=ra.shift_id WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'`;
-    const row = all(sql, [week_start, week_end])[0];
-    return { count: row?.n || 0, source: useApproved ? 'approved' : 'scheduled' };
+    const rows = await all(sql, [week_start, week_end]);
+    return { count: rows[0]?.n || 0, source: useApproved ? 'approved' : 'scheduled' };
   });
 
-  h('import:staff', ({ run, get }, { rows }) => {
+  h('import:staff', async ({ run, get }, { rows }) => {
     let imported = 0;
-    (rows || []).forEach((r) => {
-      if (!r.first_name || !r.last_name) return;
+    for (const r of (rows || [])) {
+      if (!r.first_name || !r.last_name) continue;
       const id = genId();
-      run(`INSERT INTO staff (id,facility_id,first_name,last_name,email,phone,role,status) VALUES (?,?,?,?,?,?,?,?)`,
+      await run(`INSERT INTO staff (id,facility_id,first_name,last_name,email,phone,role,status) VALUES (?,?,?,?,?,?,?,?)`,
         [id, 'fac1', r.first_name, r.last_name, r.email || null, r.phone || null, r.role || 'lifeguard', r.status || 'active']);
       imported++;
-    });
+    }
     return { imported };
   });
 
   // ── Pay components ──
-  h('roster:pay_components', ({ all }, { include_inactive } = {}) => {
+  h('roster:pay_components', async ({ all }, { include_inactive } = {}) => {
     let sql = `SELECT * FROM pay_component WHERE 1=1`;
     if (!include_inactive) sql += ` AND is_active=1`;
-    return all(sql + ` ORDER BY sort_order, code`);
+    return await all(sql + ` ORDER BY sort_order, code`);
   });
 
-  h('roster:pay_component_save', ({ run, get }, d) => {
+  h('roster:pay_component_save', async ({ run, get }, d) => {
     const id = d.id || genId();
-    const existing = get(`SELECT id FROM pay_component WHERE id=?`, [id]);
+    const existing = await get(`SELECT id FROM pay_component WHERE id=?`, [id]);
     if (existing) {
-      run(`UPDATE pay_component SET code=?, name=?, category=?, default_rate=?, rate_multiplier=?, export_code=?, is_active=?, sort_order=? WHERE id=?`,
+      await run(`UPDATE pay_component SET code=?, name=?, category=?, default_rate=?, rate_multiplier=?, export_code=?, is_active=?, sort_order=? WHERE id=?`,
         [d.code, d.name, d.category || 'earning', d.default_rate || 0, d.rate_multiplier ?? 1,
           d.export_code || d.code, d.is_active != null ? (d.is_active ? 1 : 0) : 1, d.sort_order || 0, id]);
     } else {
-      run(`INSERT INTO pay_component (id,code,name,category,default_rate,rate_multiplier,export_code,is_active,sort_order) VALUES (?,?,?,?,?,?,?,?,?)`,
+      await run(`INSERT INTO pay_component (id,code,name,category,default_rate,rate_multiplier,export_code,is_active,sort_order) VALUES (?,?,?,?,?,?,?,?,?)`,
         [id, d.code, d.name, d.category || 'earning', d.default_rate || 0, d.rate_multiplier ?? 1,
           d.export_code || d.code, d.is_active != null ? (d.is_active ? 1 : 0) : 1, d.sort_order || 0]);
     }
     return { id };
   });
 
-  h('roster:resolve_pay', ({ get }, { shift_id, staff_id, pay_component_id } = {}) => {
-    const shift = shift_id ? get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]) : null;
-    const snap = resolvePaySnapshot(get, { shift, staff_id, pay_component_id: pay_component_id || shift?.pay_component_id });
+  h('roster:resolve_pay', async ({ get }, { shift_id, staff_id, pay_component_id } = {}) => {
+    const shift = shift_id ? await get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]) : null;
+    const snap = await resolvePaySnapshot(get, { shift, staff_id, pay_component_id: pay_component_id || shift?.pay_component_id });
     const hours = shift ? shiftHours(shift.start_time, shift.end_time, shift.break_minutes || 0) : 0;
     return { ...snap, hours, amount: computeAmount(hours, snap.pay_rate, snap.multiplier) };
   });
 
   // ── Roster locations & roles ──
-  h('roster:locations', ({ all }, { facility_id } = {}) => {
+  h('roster:locations', async ({ all }, { facility_id } = {}) => {
     let sql = `SELECT * FROM roster_location WHERE is_active=1`;
     const p = [];
     if (facility_id) { sql += ` AND facility_id=?`; p.push(facility_id); }
-    return all(sql + ` ORDER BY sort_order,name`, p);
+    return await all(sql + ` ORDER BY sort_order,name`, p);
   });
-  h('roster:roles', ({ all }, { facility_id } = {}) => {
+  h('roster:roles', async ({ all }, { facility_id } = {}) => {
     let sql = `SELECT * FROM roster_role WHERE is_active=1`;
     const p = [];
     if (facility_id) { sql += ` AND facility_id=?`; p.push(facility_id); }
-    return all(sql + ` ORDER BY name`, p);
+    return await all(sql + ` ORDER BY name`, p);
   });
 
-  h('roster:shifts', ({ all }, { week_start, week_end, facility_id } = {}) => all(`
+  h('roster:shifts', async ({ all }, { week_start, week_end, facility_id } = {}) => await all(`
     SELECT rs.*, rl.name as location_name, rr.name as role_name, rr.color as role_color,
       pc.code as pay_code, pc.name as pay_component_name, pc.export_code
     FROM roster_shift rs
@@ -442,7 +448,7 @@ function registerExtendedHandlers(h) {
     ORDER BY rs.shift_date, rs.start_time
   `, facility_id ? [week_start, week_end, facility_id] : [week_start, week_end]));
 
-  h('roster:assignments', ({ all }, { week_start, week_end } = {}) => all(`
+  h('roster:assignments', async ({ all }, { week_start, week_end } = {}) => await all(`
     SELECT ra.*, rs.shift_date, rs.start_time, rs.end_time, rs.location_id, rs.role_id, rs.is_open,
       rs.break_minutes, rs.pay_component_id as shift_pay_component_id,
       s.first_name, s.last_name, s.role as staff_role, s.employee_number, s.nzrrp_expiry,
@@ -454,9 +460,9 @@ function registerExtendedHandlers(h) {
     WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'
   `, [week_start, week_end]));
 
-  h('roster:week_summary', ({ all, get }, { week_start, week_end } = {}) => {
-    const shifts = all(`SELECT * FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
-    const assignments = all(`
+  h('roster:week_summary', async ({ all, get }, { week_start, week_end } = {}) => {
+    const shifts = await all(`SELECT * FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
+    const assignments = await all(`
       SELECT ra.*, rs.start_time, rs.end_time, rs.break_minutes, rs.status as shift_status,
         pc.rate_multiplier
       FROM roster_assignment ra
@@ -473,7 +479,7 @@ function registerExtendedHandlers(h) {
       totalHours += h;
       labourCost += computeAmount(h, a.pay_rate || 0, a.rate_multiplier || 1);
     });
-    const pendingLeave = get(`SELECT COUNT(*) as n FROM roster_leave WHERE status='pending'`)?.n || 0;
+    const pendingLeave = await get(`SELECT COUNT(*) as n FROM roster_leave WHERE status='pending'`)?.n || 0;
     return {
       total_shifts: shifts.length,
       open_shifts: openCount,
@@ -484,13 +490,13 @@ function registerExtendedHandlers(h) {
     };
   });
 
-  h('roster:shift_create', ({ run, get }, d) => {
+  h('roster:shift_create', async ({ run, get }, d) => {
     if (!d.pay_component_id) {
-      const role = d.role_id ? get(`SELECT default_pay_component_id FROM roster_role WHERE id=?`, [d.role_id]) : null;
-      d.pay_component_id = role?.default_pay_component_id || get(`SELECT id FROM pay_component WHERE code='ORD' LIMIT 1`)?.id;
+      const role = d.role_id ? await get(`SELECT default_pay_component_id FROM roster_role WHERE id=?`, [d.role_id]) : null;
+      d.pay_component_id = role?.default_pay_component_id || await get(`SELECT id FROM pay_component WHERE code='ORD' LIMIT 1`)?.id;
     }
     const id = genId();
-    run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open,pay_component_id,headcount)
+    await run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open,pay_component_id,headcount)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, d.facility_id || 'fac1', d.location_id, d.role_id, d.shift_date, d.start_time, d.end_time,
         d.break_minutes || 0, d.notes || null, d.status || 'draft', d.is_open ? 1 : 0,
@@ -498,123 +504,125 @@ function registerExtendedHandlers(h) {
     return { id };
   });
 
-  h('roster:shift_update', ({ run, get }, { id, ...d }) => {
+  h('roster:shift_update', async ({ run, get }, { id, ...d }) => {
     const patch = patchRosterShift(d);
     if (!id || !Object.keys(patch).length) return { id };
     const sets = Object.keys(patch).map((k) => `${k}=?`).join(',');
-    run(`UPDATE roster_shift SET ${sets} WHERE id=?`, [...Object.values(patch), id]);
-    syncShiftOpenState(run, get, id);
+    await run(`UPDATE roster_shift SET ${sets} WHERE id=?`, [...Object.values(patch), id]);
+    await syncShiftOpenState(run, get, id);
     return { id };
   });
 
-  h('roster:shift_delete', ({ run }, id) => {
-    run(`DELETE FROM roster_assignment WHERE shift_id=?`, [id]);
-    run(`DELETE FROM roster_shift WHERE id=?`, [id]);
+  h('roster:shift_delete', async ({ run }, id) => {
+    await run(`DELETE FROM roster_assignment WHERE shift_id=?`, [id]);
+    await run(`DELETE FROM roster_shift WHERE id=?`, [id]);
     return { id };
   });
 
-  h('roster:assign', ({ run, get, all }, { shift_id, staff_id, pay_rate, pay_component_id, replace = false }) => {
-    const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
+  h('roster:assign', async ({ run, get, all }, { shift_id, staff_id, pay_rate, pay_component_id, replace = false }) => {
+    const shift = await get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
     if (!shift) return { error: 'Shift not found' };
     const headcount = Math.max(1, shift.headcount || 1);
-    const active = all(`SELECT id, staff_id FROM roster_assignment WHERE shift_id=? AND status!='cancelled'`, [shift_id]);
+    const active = await all(`SELECT id, staff_id FROM roster_assignment WHERE shift_id=? AND status!='cancelled'`, [shift_id]);
     const existing = active.find((a) => a.staff_id === staff_id);
     if (existing) return { id: existing.id };
 
     if (replace) {
-      active.forEach((a) => run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [a.id]));
+      for (const a of active) {
+        await run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [a.id]);
+      }
     } else if (active.length >= headcount) {
       return { error: 'shift_full', message: `Shift is full (${headcount} staff)` };
     }
 
-    const snap = resolvePaySnapshot(get, { shift, staff_id, pay_component_id: pay_component_id || shift.pay_component_id });
+    const snap = await resolvePaySnapshot(get, { shift, staff_id, pay_component_id: pay_component_id || shift.pay_component_id });
     const id = genId();
-    run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
+    await run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
       [id, shift_id, staff_id, pay_rate != null ? pay_rate : snap.pay_rate, snap.pay_type, snap.pay_component_id]);
-    syncShiftOpenState(run, get, shift_id);
+    await syncShiftOpenState(run, get, shift_id);
     return { id, ...snap };
   });
 
-  h('roster:unassign', ({ run, get }, { assignment_id, shift_id }) => {
+  h('roster:unassign', async ({ run, get }, { assignment_id, shift_id }) => {
     let sid = shift_id;
     if (assignment_id) {
-      const row = get(`SELECT shift_id FROM roster_assignment WHERE id=?`, [assignment_id]);
+      const row = await get(`SELECT shift_id FROM roster_assignment WHERE id=?`, [assignment_id]);
       sid = sid || row?.shift_id;
-      run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [assignment_id]);
+      await run(`UPDATE roster_assignment SET status='cancelled' WHERE id=?`, [assignment_id]);
     }
-    if (sid) syncShiftOpenState(run, get, sid);
+    if (sid) await syncShiftOpenState(run, get, sid);
     return { ok: true };
   });
 
-  h('roster:publish_week', ({ run, all }, { week_start, week_end, generate_timesheets } = {}) => {
-    run(`UPDATE roster_shift SET status='published' WHERE shift_date>=? AND shift_date<=? AND status='draft'`, [week_start, week_end]);
+  h('roster:publish_week', async ({ run, all }, { week_start, week_end, generate_timesheets } = {}) => {
+    await run(`UPDATE roster_shift SET status='published' WHERE shift_date>=? AND shift_date<=? AND status='draft'`, [week_start, week_end]);
     if (generate_timesheets !== false) {
-      const assignments = all(`
+      const assignments = await all(`
         SELECT ra.id, ra.shift_id, ra.staff_id, ra.pay_component_id,
           rs.shift_date, rs.start_time, rs.end_time, rs.break_minutes, rs.pay_component_id as shift_pc
         FROM roster_assignment ra
         JOIN roster_shift rs ON rs.id=ra.shift_id
         WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled' AND rs.status='published'
       `, [week_start, week_end]);
-      assignments.forEach((a) => {
-        const existing = all(`SELECT id FROM timesheet_entry WHERE shift_id=? AND staff_id=?`, [a.shift_id, a.staff_id])[0];
-        if (existing) return;
+      for (const a of assignments) {
+        const existingRows = await all(`SELECT id FROM timesheet_entry WHERE shift_id=? AND staff_id=?`, [a.shift_id, a.staff_id]);
+        if (existingRows[0]) continue;
         const hours = shiftHours(a.start_time, a.end_time, a.break_minutes || 0);
         const tid = genId();
-        run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,pay_component_id) VALUES (?,?,?,?,?,?,?)`,
+        await run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,pay_component_id) VALUES (?,?,?,?,?,?,?)`,
           [tid, a.staff_id, a.shift_id, a.shift_date, hours, 'draft', a.pay_component_id || a.shift_pc || null]);
-      });
+      }
     }
     return { ok: true };
   });
 
-  h('roster:bulk_assign', ({ run, get, all }, { shift_ids, staff_id }) => {
+  h('roster:bulk_assign', async ({ run, get, all }, { shift_ids, staff_id }) => {
     const results = [];
-    (shift_ids || []).forEach((shift_id) => {
-      const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
-      if (!shift) return;
-      const dup = get(`SELECT id FROM roster_assignment WHERE shift_id=? AND staff_id=? AND status!='cancelled'`, [shift_id, staff_id]);
-      if (dup) return;
-      const snap = resolvePaySnapshot(get, { shift, staff_id, pay_component_id: shift.pay_component_id });
+    for (const shift_id of (shift_ids || [])) {
+      const shift = await get(`SELECT * FROM roster_shift WHERE id=?`, [shift_id]);
+      if (!shift) continue;
+      const dup = await get(`SELECT id FROM roster_assignment WHERE shift_id=? AND staff_id=? AND status!='cancelled'`, [shift_id, staff_id]);
+      if (dup) continue;
+      const snap = await resolvePaySnapshot(get, { shift, staff_id, pay_component_id: shift.pay_component_id });
       const id = genId();
-      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
+      await run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
         [id, shift_id, staff_id, snap.pay_rate, snap.pay_type, snap.pay_component_id]);
-      syncShiftOpenState(run, get, shift_id);
+      await syncShiftOpenState(run, get, shift_id);
       results.push(id);
-    });
+    }
     return { assigned: results.length };
   });
 
-  h('roster:copy_week', ({ run, all }, { week_start, week_end }) => {
-    const shifts = all(`SELECT * FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
+  h('roster:copy_week', async ({ run, all }, { week_start, week_end }) => {
+    const shifts = await all(`SELECT * FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
     if (!shifts.length) return { copied: 0, message: 'No shifts to copy' };
     const dayMs = 7 * 86400000;
     let count = 0;
-    shifts.forEach((s) => {
+    for (const s of shifts) {
       const newDate = new Date(s.shift_date);
       newDate.setDate(newDate.getDate() + 7);
       const shift_date = newDate.toISOString().slice(0, 10);
       const id = genId();
-      run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open,pay_component_id,headcount)
+      await run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,break_minutes,notes,status,is_open,pay_component_id,headcount)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [id, s.facility_id, s.location_id, s.role_id, shift_date, s.start_time, s.end_time,
           s.break_minutes || 0, s.notes, 'draft', 1, s.pay_component_id, s.headcount || 1]);
       count++;
-    });
+    }
     return { copied: count };
   });
 
-  h('roster:clear_week', ({ run, all }, { week_start, week_end }) => {
-    const shifts = all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
-    shifts.forEach((s) => {
-      run(`DELETE FROM roster_assignment WHERE shift_id=?`, [s.id]);
-      run(`DELETE FROM timesheet_entry WHERE shift_id=?`, [s.id]);
-      run(`DELETE FROM roster_shift WHERE id=?`, [s.id]);
-    });
+  h('roster:clear_week', async ({ run, all }, { week_start, week_end }) => {
+    const shifts = await all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<=?`, [week_start, week_end]);
+    for (const s of shifts) {
+      await run(`DELETE FROM roster_assignment WHERE shift_id=?`, [s.id]);
+      await run(`DELETE FROM timesheet_entry WHERE shift_id=?`, [s.id]);
+      await run(`DELETE FROM roster_shift WHERE id=?`, [s.id]);
+    }
     return { deleted: shifts.length };
   });
 
-  h('roster:open_shifts', ({ all }, { week_start, week_end } = {}) => all(`
+  h('roster:open_shifts', async ({ all }, { week_start, week_end } = {}) => await all(`
     SELECT rs.*, rl.name as location_name, rr.name as role_name
     FROM roster_shift rs
     LEFT JOIN roster_location rl ON rl.id=rs.location_id
@@ -624,47 +632,47 @@ function registerExtendedHandlers(h) {
     ORDER BY rs.shift_date, rs.start_time
   `, [week_start, week_end]));
 
-  h('roster:unavailability', ({ all }, { staff_id } = {}) => {
+  h('roster:unavailability', async ({ all }, { staff_id } = {}) => {
     let sql = `SELECT ru.*, s.first_name, s.last_name FROM roster_unavailability ru JOIN staff s ON s.id=ru.staff_id WHERE 1=1`;
     const p = [];
     if (staff_id) { sql += ` AND ru.staff_id=?`; p.push(staff_id); }
-    return all(sql + ` ORDER BY ru.start_date DESC`, p);
+    return await all(sql + ` ORDER BY ru.start_date DESC`, p);
   });
 
-  h('roster:unavailability_create', ({ run }, d) => {
+  h('roster:unavailability_create', async ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO roster_unavailability (id,staff_id,start_date,end_date,reason,all_day,start_time,end_time) VALUES (?,?,?,?,?,?,?,?)`,
+    await run(`INSERT INTO roster_unavailability (id,staff_id,start_date,end_date,reason,all_day,start_time,end_time) VALUES (?,?,?,?,?,?,?,?)`,
       [id, d.staff_id, d.start_date, d.end_date, d.reason || null, d.all_day ? 1 : 0, d.start_time || null, d.end_time || null]);
     return { id };
   });
 
-  h('roster:leave_list', ({ all }, { status } = {}) => {
+  h('roster:leave_list', async ({ all }, { status } = {}) => {
     let sql = `SELECT rl.*, s.first_name, s.last_name FROM roster_leave rl JOIN staff s ON s.id=rl.staff_id WHERE 1=1`;
     const p = [];
     if (status) { sql += ` AND rl.status=?`; p.push(status); }
-    return all(sql + ` ORDER BY rl.created_at DESC`, p);
+    return await all(sql + ` ORDER BY rl.created_at DESC`, p);
   });
 
-  h('roster:leave_create', ({ run }, d) => {
+  h('roster:leave_create', async ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO roster_leave (id,staff_id,leave_type,start_date,end_date,hours,status,notes) VALUES (?,?,?,?,?,?,?,?)`,
+    await run(`INSERT INTO roster_leave (id,staff_id,leave_type,start_date,end_date,hours,status,notes) VALUES (?,?,?,?,?,?,?,?)`,
       [id, d.staff_id, d.leave_type || 'annual', d.start_date, d.end_date, d.hours || null, 'pending', d.notes || null]);
     return { id };
   });
 
-  h('roster:leave_review', ({ run }, { id, status, reviewed_by }) => {
-    run(`UPDATE roster_leave SET status=?, reviewed_by=? WHERE id=?`, [status, reviewed_by || null, id]);
+  h('roster:leave_review', async ({ run }, { id, status, reviewed_by }) => {
+    await run(`UPDATE roster_leave SET status=?, reviewed_by=? WHERE id=?`, [status, reviewed_by || null, id]);
     return { id };
   });
 
-  h('roster:offer_create', ({ run }, d) => {
+  h('roster:offer_create', async ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO roster_shift_offer (id,shift_id,from_staff_id,to_staff_id,status,message) VALUES (?,?,?,?,?,?)`,
+    await run(`INSERT INTO roster_shift_offer (id,shift_id,from_staff_id,to_staff_id,status,message) VALUES (?,?,?,?,?,?)`,
       [id, d.shift_id, d.from_staff_id, d.to_staff_id, 'pending', d.message || null]);
     return { id };
   });
 
-  h('roster:offers', ({ all }, { status } = {}) => {
+  h('roster:offers', async ({ all }, { status } = {}) => {
     let sql = `
       SELECT o.*, rs.shift_date, rs.start_time, rs.end_time,
         fs.first_name as from_first, fs.last_name as from_last,
@@ -675,35 +683,35 @@ function registerExtendedHandlers(h) {
       LEFT JOIN staff ts ON ts.id=o.to_staff_id WHERE 1=1`;
     const p = [];
     if (status) { sql += ` AND o.status=?`; p.push(status); }
-    return all(sql + ` ORDER BY o.created_at DESC`, p);
+    return await all(sql + ` ORDER BY o.created_at DESC`, p);
   });
 
-  h('roster:offer_respond', ({ run, get }, { id, accept }) => {
-    const offer = get(`SELECT * FROM roster_shift_offer WHERE id=?`, [id]);
+  h('roster:offer_respond', async ({ run, get }, { id, accept }) => {
+    const offer = await get(`SELECT * FROM roster_shift_offer WHERE id=?`, [id]);
     if (!offer) return { error: 'Not found' };
-    run(`UPDATE roster_shift_offer SET status=? WHERE id=?`, [accept ? 'accepted' : 'declined', id]);
+    await run(`UPDATE roster_shift_offer SET status=? WHERE id=?`, [accept ? 'accepted' : 'declined', id]);
     if (accept) {
-      run(`UPDATE roster_assignment SET status='cancelled' WHERE shift_id=? AND staff_id=?`, [offer.shift_id, offer.from_staff_id]);
-      const shift = get(`SELECT * FROM roster_shift WHERE id=?`, [offer.shift_id]);
-      const snap = resolvePaySnapshot(get, { shift, staff_id: offer.to_staff_id, pay_component_id: shift?.pay_component_id });
+      await run(`UPDATE roster_assignment SET status='cancelled' WHERE shift_id=? AND staff_id=?`, [offer.shift_id, offer.from_staff_id]);
+      const shift = await get(`SELECT * FROM roster_shift WHERE id=?`, [offer.shift_id]);
+      const snap = await resolvePaySnapshot(get, { shift, staff_id: offer.to_staff_id, pay_component_id: shift?.pay_component_id });
       const aid = genId();
-      run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
+      await run(`INSERT INTO roster_assignment (id,shift_id,staff_id,status,pay_rate,pay_type,pay_component_id) VALUES (?,?,?,'assigned',?,?,?)`,
         [aid, offer.shift_id, offer.to_staff_id, snap.pay_rate, snap.pay_type, snap.pay_component_id]);
     }
     return { ok: true };
   });
 
-  h('roster:match_staff', ({ all, get }, { shift_id }) => {
-    const shift = get(`
+  h('roster:match_staff', async ({ all, get }, { shift_id }) => {
+    const shift = await get(`
       SELECT rs.*, rr.staff_role FROM roster_shift rs
       LEFT JOIN roster_role rr ON rr.id=rs.role_id WHERE rs.id=?`, [shift_id]);
     if (!shift) return [];
-    const staff = all(`SELECT * FROM staff WHERE status='active' AND facility_id=?`, [shift.facility_id || 'fac1']);
-    const unavailable = all(`
+    const staff = await all(`SELECT * FROM staff WHERE status='active' AND facility_id=?`, [shift.facility_id || 'fac1']);
+    const unavailable = await all(`
       SELECT staff_id FROM roster_unavailability
       WHERE start_date<=? AND end_date>=?`, [shift.shift_date, shift.shift_date]);
     const unavailIds = new Set(unavailable.map((u) => u.staff_id));
-    const onLeave = all(`
+    const onLeave = await all(`
       SELECT staff_id FROM roster_leave WHERE status='approved'
       AND start_date<=? AND end_date>=?`, [shift.shift_date, shift.shift_date]);
     onLeave.forEach((l) => unavailIds.add(l.staff_id));
@@ -716,7 +724,7 @@ function registerExtendedHandlers(h) {
       .sort((a, b) => b.matchScore - a.matchScore);
   });
 
-  h('roster:timesheets', ({ all }, { week_start, week_end } = {}) => all(`
+  h('roster:timesheets', async ({ all }, { week_start, week_end } = {}) => await all(`
     SELECT te.*, s.first_name, s.last_name, s.employee_number,
       rs.start_time, rs.end_time, pc.code as pay_code
     FROM timesheet_entry te
@@ -727,27 +735,28 @@ function registerExtendedHandlers(h) {
     ORDER BY te.work_date DESC
   `, [week_start, week_end]));
 
-  h('roster:timesheet_create', ({ run }, d) => {
+  h('roster:timesheet_create', async ({ run }, d) => {
     const id = genId();
-    run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,notes,pay_component_id) VALUES (?,?,?,?,?,?,?,?)`,
+    await run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,notes,pay_component_id) VALUES (?,?,?,?,?,?,?,?)`,
       [id, d.staff_id, d.shift_id || null, d.work_date, d.hours, d.status || 'draft', d.notes || null, d.pay_component_id || null]);
     return { id };
   });
 
-  h('roster:timesheet_update', ({ run }, { id, ...d }) => {
-    const sets = Object.keys(d).map((k) => `${k}=?`).join(',');
-    run(`UPDATE timesheet_entry SET ${sets} WHERE id=?`, [...Object.values(d), id]);
+  h('roster:timesheet_update', async ({ run }, { id, ...d }) => {
+    const patch = buildUpdateSets(d, TIMESHEET_UPDATE_COLS);
+    if (!patch) return { id };
+    await run(`UPDATE timesheet_entry SET ${patch.sets} WHERE id=?`, [...patch.values, id]);
     return { id };
   });
 
-  h('roster:timesheet_approve', ({ run, get }, { id, approved_by, hours }) => {
-    if (hours != null) run(`UPDATE timesheet_entry SET hours=?, status='approved', approved_by=? WHERE id=?`, [hours, approved_by || null, id]);
-    else run(`UPDATE timesheet_entry SET status='approved', approved_by=? WHERE id=?`, [approved_by || null, id]);
+  h('roster:timesheet_approve', async ({ run, get }, { id, approved_by, hours }) => {
+    if (hours != null) await run(`UPDATE timesheet_entry SET hours=?, status='approved', approved_by=? WHERE id=?`, [hours, approved_by || null, id]);
+    else await run(`UPDATE timesheet_entry SET status='approved', approved_by=? WHERE id=?`, [approved_by || null, id]);
     return { id };
   });
 
-  h('roster:generate_timesheets', ({ run, all }, { week_start, week_end } = {}) => {
-    const assignments = all(`
+  h('roster:generate_timesheets', async ({ run, all }, { week_start, week_end } = {}) => {
+    const assignments = await all(`
       SELECT ra.shift_id, ra.staff_id, ra.pay_component_id,
         rs.shift_date, rs.start_time, rs.end_time, rs.break_minutes, rs.pay_component_id as shift_pc
       FROM roster_assignment ra
@@ -755,76 +764,77 @@ function registerExtendedHandlers(h) {
       WHERE rs.shift_date>=? AND rs.shift_date<=? AND ra.status!='cancelled'
     `, [week_start, week_end]);
     let created = 0;
-    assignments.forEach((a) => {
-      const existing = all(`SELECT id FROM timesheet_entry WHERE shift_id=? AND staff_id=?`, [a.shift_id, a.staff_id])[0];
-      if (existing) return;
+    for (const a of assignments) {
+      const existingRows = await all(`SELECT id FROM timesheet_entry WHERE shift_id=? AND staff_id=?`, [a.shift_id, a.staff_id]);
+      if (existingRows[0]) continue;
       const hours = shiftHours(a.start_time, a.end_time, a.break_minutes || 0);
       const tid = genId();
-      run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,pay_component_id) VALUES (?,?,?,?,?,?,?)`,
+      await run(`INSERT INTO timesheet_entry (id,staff_id,shift_id,work_date,hours,status,pay_component_id) VALUES (?,?,?,?,?,?,?)`,
         [tid, a.staff_id, a.shift_id, a.shift_date, hours, 'draft', a.pay_component_id || a.shift_pc || null]);
       created++;
-    });
+    }
     return { created };
   });
 
-  h('roster:staff_conflicts', ({ all }, { staff_id, shift_date, start_time, end_time, exclude_shift_id } = {}) => {
+  h('roster:staff_conflicts', async ({ all }, { staff_id, shift_date, start_time, end_time, exclude_shift_id } = {}) => {
     const conflicts = [];
-    const overlapping = all(`
+    const overlapping = await all(`
       SELECT rs.*, rl.name as location_name FROM roster_shift rs
       JOIN roster_assignment ra ON ra.shift_id=rs.id AND ra.status!='cancelled'
       LEFT JOIN roster_location rl ON rl.id=rs.location_id
       WHERE ra.staff_id=? AND rs.shift_date=? AND rs.id!=?
     `, [staff_id, shift_date, exclude_shift_id || '']);
     overlapping.forEach((s) => conflicts.push({ type: 'overlap', message: `Overlapping shift at ${s.location_name}`, shift_id: s.id }));
-    const onLeave = all(`
+    const onLeave = await all(`
       SELECT * FROM roster_leave WHERE staff_id=? AND status='approved'
       AND start_date<=? AND end_date>=?
     `, [staff_id, shift_date, shift_date]);
     if (onLeave.length) conflicts.push({ type: 'leave', message: 'Approved leave on this date' });
-    const staff = get(`SELECT nzrrp_expiry FROM staff WHERE id=?`, [staff_id]);
+    const staff = await get(`SELECT nzrrp_expiry FROM staff WHERE id=?`, [staff_id]);
     if (staff?.nzrrp_expiry && staff.nzrrp_expiry < shift_date) {
       conflicts.push({ type: 'qualification', message: 'NZRRP expired' });
     }
     return conflicts;
   });
 
-  h('roster:seed_week', ({ run, all, get }, { week_start }) => {
-    const existing = all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<date(?, '+7 days')`, [week_start, week_start]);
+  h('roster:seed_week', async ({ run, all, get }, { week_start }) => {
+    const existing = await all(`SELECT id FROM roster_shift WHERE shift_date>=? AND shift_date<date(?, '+7 days')`, [week_start, week_start]);
     if (existing.length > 0) return { seeded: 0, message: 'Week already has shifts' };
-    const locations = all(`SELECT id FROM roster_location WHERE is_active=1`);
-    const roles = all(`SELECT id, default_pay_component_id FROM roster_role WHERE is_active=1`);
-    const defaultPc = get(`SELECT id FROM pay_component WHERE code='ORD' LIMIT 1`)?.id;
+    const locations = await all(`SELECT id FROM roster_location WHERE is_active=1`);
+    const roles = await all(`SELECT id, default_pay_component_id FROM roster_role WHERE is_active=1`);
+    const defaultPcRow = await get(`SELECT id FROM pay_component WHERE code='ORD' LIMIT 1`);
+    const defaultPc = defaultPcRow?.id;
     const days = [0, 1, 2, 3, 4, 5, 6];
     let count = 0;
-    days.forEach((d) => {
+    for (const d of days) {
       const date = new Date(week_start);
       date.setDate(date.getDate() + d);
       const shift_date = date.toISOString().slice(0, 10);
-      [['06:00', '14:00'], ['14:00', '22:00']].forEach(([start, end], i) => {
+      for (const [i, [start, end]] of [['06:00', '14:00'], ['14:00', '22:00']].entries()) {
         const loc = locations[i % locations.length];
         const role = roles[i % roles.length];
-        if (!loc || !role) return;
+        if (!loc || !role) continue;
         const id = genId();
-        run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,status,is_open,pay_component_id,headcount)
+        await run(`INSERT INTO roster_shift (id,facility_id,location_id,role_id,shift_date,start_time,end_time,status,is_open,pay_component_id,headcount)
           VALUES (?,?,?,?,?,?,?,'draft',1,?,1)`, [id, 'fac1', loc.id, role.id, shift_date, start, end, role.default_pay_component_id || defaultPc]);
         count++;
-      });
-    });
+      }
+    }
     return { seeded: count };
   });
 
-  h('audit:list', ({ all }, { limit, entity_type } = {}) => {
+  h('audit:list', async ({ all }, { limit, entity_type } = {}) => {
     let sql = `SELECT * FROM audit_log WHERE 1=1`;
     const p = [];
     if (entity_type) { sql += ` AND entity_type=?`; p.push(entity_type); }
     sql += ` ORDER BY created_at DESC LIMIT ?`;
     p.push(limit || 100);
-    return all(sql, p);
+    return await all(sql, p);
   });
 
-  h('remote:status', ({ get }) => {
+  h('remote:status', async ({ get }) => {
     const { readRemoteSettings } = require('./remoteAccess');
-    const { enabled, token } = readRemoteSettings(get);
+    const { enabled, token } = await readRemoteSettings(get);
     return {
       enabled,
       hasToken: !!token,
@@ -832,12 +842,12 @@ function registerExtendedHandlers(h) {
     };
   });
 
-  h('remote:enable', ({ run, get }) => {
+  h('remote:enable', async ({ run, get }) => {
     const { generateRemoteToken } = require('./remoteAccess');
     const token = generateRemoteToken();
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_enabled', '1')`);
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_token', ?)`, [token]);
-    writeAudit({ run, get, all: () => [] }, {
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_enabled', '1')`);
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_token', ?)`, [token]);
+    await writeAudit({ run, get, all: () => [] }, {
       action: 'remote.enable',
       entity_type: 'setting',
       entity_id: 'remote_access',
@@ -845,9 +855,9 @@ function registerExtendedHandlers(h) {
     return { enabled: true, token };
   });
 
-  h('remote:disable', ({ run, get }) => {
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_enabled', '0')`);
-    writeAudit({ run, get, all: () => [] }, {
+  h('remote:disable', async ({ run, get }) => {
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_enabled', '0')`);
+    await writeAudit({ run, get, all: () => [] }, {
       action: 'remote.disable',
       entity_type: 'setting',
       entity_id: 'remote_access',
@@ -855,11 +865,11 @@ function registerExtendedHandlers(h) {
     return { enabled: false };
   });
 
-  h('remote:rotate_token', ({ run, get }) => {
+  h('remote:rotate_token', async ({ run, get }) => {
     const { generateRemoteToken } = require('./remoteAccess');
     const token = generateRemoteToken();
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_token', ?)`, [token]);
-    writeAudit({ run, get, all: () => [] }, {
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('remote_access_token', ?)`, [token]);
+    await writeAudit({ run, get, all: () => [] }, {
       action: 'remote.rotate_token',
       entity_type: 'setting',
       entity_id: 'remote_access',
@@ -867,120 +877,115 @@ function registerExtendedHandlers(h) {
     return { token };
   });
 
-  h('cloud:status', ({ get, all }) => {
-    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
-    const pending = all(`SELECT COUNT(*) AS n FROM cloud_sync_outbox WHERE synced_at IS NULL`)[0]?.n || 0;
-    const siteId = g('cloud_site_id');
+  h('cloud:status', async ({ get, all }) => {
+    const pendingRows = await all(`SELECT COUNT(*) AS n FROM cloud_sync_outbox WHERE synced_at IS NULL`);
+    const pending = pendingRows[0]?.n || 0;
+    const siteId = await settingValue(get, 'cloud_site_id');
     return {
-      enabled: g('cloud_enabled') === '1',
+      enabled: (await settingValue(get, 'cloud_enabled')) === '1',
       paired: !!siteId,
       site_id: siteId || null,
-      relay_url: g('cloud_relay_url') || 'https://relay.facilityos.nz',
-      last_sync_at: g('cloud_last_sync_at') || null,
-      pairing_code: g('cloud_pairing_code') || null,
+      relay_url: (await settingValue(get, 'cloud_relay_url')) || 'https://relay.facilityos.nz',
+      last_sync_at: (await settingValue(get, 'cloud_last_sync_at')) || null,
+      pairing_code: (await settingValue(get, 'cloud_pairing_code')) || null,
       pending_events: pending,
       agent_available: false,
       protocol_version: require('../cloud/syncProtocol').SYNC_PROTOCOL_VERSION,
     };
   });
 
-  h('cloud:configure', ({ run }, { relay_url, enabled } = {}) => {
-    if (relay_url) run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_relay_url', ?)`, [relay_url]);
-    if (enabled != null) run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_enabled', ?)`, [enabled ? '1' : '0']);
+  h('cloud:configure', async ({ run }, { relay_url, enabled } = {}) => {
+    if (relay_url) await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_relay_url', ?)`, [relay_url]);
+    if (enabled != null) await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_enabled', ?)`, [enabled ? '1' : '0']);
     return { ok: true };
   });
 
-  h('cloud:pairing_code', ({ run }) => {
+  h('cloud:pairing_code', async ({ run }) => {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_pairing_code', ?)`, [code]);
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_pairing_code', ?)`, [code]);
     return { code, expires_minutes: 30 };
   });
 
-  h('cloud:sync_now', ({ run, get, all }) => {
-    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
-    const pending = all(`
+  h('cloud:sync_now', async ({ run, get, all }) => {
+    const pending = await all(`
       SELECT * FROM cloud_sync_outbox WHERE synced_at IS NULL ORDER BY updated_at ASC LIMIT 50
     `);
     const { syncPendingOutbox } = require('../cloud/syncRunner');
 
-    return syncPendingOutbox({
-      relayUrl: g('cloud_relay_url') || 'http://127.0.0.1:4850',
-      siteId: g('cloud_site_id'),
-      agentKey: g('cloud_agent_key'),
+    const result = await syncPendingOutbox({
+      relayUrl: (await settingValue(get, 'cloud_relay_url')) || 'http://127.0.0.1:4850',
+      siteId: await settingValue(get, 'cloud_site_id'),
+      agentKey: await settingValue(get, 'cloud_agent_key'),
       pendingRows: pending,
-      markSynced: (ids) => {
-        ids.forEach((id) => {
-          run(`UPDATE cloud_sync_outbox SET synced_at=datetime('now'), sync_error=NULL WHERE id=?`, [id]);
-        });
-        run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_last_sync_at', datetime('now'))`);
+      markSynced: async (ids) => {
+        for (const id of ids) {
+          await run(`UPDATE cloud_sync_outbox SET synced_at=datetime('now'), sync_error=NULL WHERE id=?`, [id]);
+        }
+        await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_last_sync_at', datetime('now'))`);
       },
-      markError: (ids, message) => {
-        ids.forEach((id) => {
-          run(`UPDATE cloud_sync_outbox SET sync_error=? WHERE id=?`, [message, id]);
-        });
+      markError: async (ids, message) => {
+        for (const id of ids) {
+          await run(`UPDATE cloud_sync_outbox SET sync_error=? WHERE id=?`, [message, id]);
+        }
       },
-    }).then((result) => ({ ...result, pending_events: pending.length }));
+    });
+    return { ...result, pending_events: pending.length };
   });
 
-  h('cloud:pair', ({ run, get, all }, { facility_name } = {}) => {
-    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
-    const code = g('cloud_pairing_code');
+  h('cloud:pair', async ({ run, get, all }, { facility_name } = {}) => {
+    const code = await settingValue(get, 'cloud_pairing_code');
     if (!code) throw new Error('generate_pairing_code_first');
-    const relayUrl = g('cloud_relay_url') || 'http://127.0.0.1:4850';
+    const relayUrl = (await settingValue(get, 'cloud_relay_url')) || 'http://127.0.0.1:4850';
     const { pairWithRelay } = require('../cloud/relayClient');
-    return pairWithRelay({
+    const response = await pairWithRelay({
       relayUrl,
       code,
-      facilityName: facility_name || g('facility_name') || 'FacilityOS Site',
-    }).then((response) => {
-      const { site_id, agent_key } = response.data || {};
-      if (!site_id || !agent_key) throw new Error('pair_failed');
-      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_site_id', ?)`, [site_id]);
-      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_agent_key', ?)`, [agent_key]);
-      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_enabled', '1')`);
-      run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_pairing_code', '')`);
-      writeAudit({ run, get, all: () => [] }, {
-        action: 'cloud.pair',
-        entity_type: 'cloud',
-        entity_id: site_id,
-      });
-      return { site_id, agent_key, relay_url: relayUrl };
+      facilityName: facility_name || (await settingValue(get, 'facility_name')) || 'FacilityOS Site',
     });
+    const { site_id, agent_key } = response.data || {};
+    if (!site_id || !agent_key) throw new Error('pair_failed');
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_site_id', ?)`, [site_id]);
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_agent_key', ?)`, [agent_key]);
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_enabled', '1')`);
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_pairing_code', '')`);
+    await writeAudit({ run, get, all: () => [] }, {
+      action: 'cloud.pair',
+      entity_type: 'cloud',
+      entity_id: site_id,
+    });
+    return { site_id, agent_key, relay_url: relayUrl };
   });
 
-  h('cloud:agent_credentials', ({ get }) => {
-    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
-    return {
-      enabled: g('cloud_enabled') === '1',
-      site_id: g('cloud_site_id') || null,
-      agent_key: g('cloud_agent_key') || null,
-      relay_url: g('cloud_relay_url') || 'http://127.0.0.1:4850',
-    };
-  });
+  h('cloud:agent_credentials', async ({ get }) => ({
+    enabled: (await settingValue(get, 'cloud_enabled')) === '1',
+    site_id: (await settingValue(get, 'cloud_site_id')) || null,
+    agent_key: (await settingValue(get, 'cloud_agent_key')) || null,
+    relay_url: (await settingValue(get, 'cloud_relay_url')) || 'http://127.0.0.1:4850',
+  }));
 
-  h('cloud:outbox_pending', ({ all }, { limit } = {}) => all(`
+  h('cloud:outbox_pending', async ({ all }, { limit } = {}) => await all(`
     SELECT * FROM cloud_sync_outbox WHERE synced_at IS NULL
     ORDER BY updated_at ASC LIMIT ?
   `, [limit || 50]));
 
-  h('cloud:outbox_ack', ({ run }, { ids } = {}) => {
-    (ids || []).forEach((id) => {
-      run(`UPDATE cloud_sync_outbox SET synced_at=datetime('now'), sync_error=NULL WHERE id=?`, [id]);
-    });
-    run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_last_sync_at', datetime('now'))`);
+  h('cloud:outbox_ack', async ({ run }, { ids } = {}) => {
+    for (const id of (ids || [])) {
+      await run(`UPDATE cloud_sync_outbox SET synced_at=datetime('now'), sync_error=NULL WHERE id=?`, [id]);
+    }
+    await run(`INSERT OR REPLACE INTO setting (key, value) VALUES ('cloud_last_sync_at', datetime('now'))`);
     return { acked: (ids || []).length };
   });
 
-  h('cloud:outbox_error', ({ run }, { ids, message } = {}) => {
-    (ids || []).forEach((id) => {
-      run(`UPDATE cloud_sync_outbox SET sync_error=? WHERE id=?`, [message || 'sync_failed', id]);
-    });
+  h('cloud:outbox_error', async ({ run }, { ids, message } = {}) => {
+    for (const id of (ids || [])) {
+      await run(`UPDATE cloud_sync_outbox SET sync_error=? WHERE id=?`, [message || 'sync_failed', id]);
+    }
     return { ok: true };
   });
 
-  h('cloud:enqueue_demo', ({ run, get }) => {
+  h('cloud:enqueue_demo', async ({ run, get }) => {
     const { enqueueOutbox } = require('../cloud/outbox');
-    const id = enqueueOutbox(run, {
+    const id = await enqueueOutbox(run, {
       entity_type: 'audit_event',
       entity_id: `demo-${Date.now()}`,
       op: 'create',
@@ -989,26 +994,56 @@ function registerExtendedHandlers(h) {
     return { id };
   });
 
-  h('cloud:create_mobile_user', ({ get }, { email, password, name, role } = {}) => {
-    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
-    const siteId = g('cloud_site_id');
-    const agentKey = g('cloud_agent_key');
-    const relayUrl = g('cloud_relay_url') || 'http://127.0.0.1:4850';
+  h('cloud:create_mobile_user', async ({ get }, { email, password, name, role } = {}) => {
+    const siteId = await settingValue(get, 'cloud_site_id');
+    const agentKey = await settingValue(get, 'cloud_agent_key');
+    const relayUrl = (await settingValue(get, 'cloud_relay_url')) || 'http://127.0.0.1:4850';
     if (!siteId || !agentKey) throw new Error('cloud_not_paired');
     if (!email || !password || password.length < 8) throw new Error('invalid_user_credentials');
     const { createCloudUser } = require('../cloud/relayClient');
     return createCloudUser({ relayUrl, siteId, agentKey, email, password, name, role });
   });
 
-  h('email:status', ({ get, all }) => {
+  h('email:status', async ({ get, all }) => {
     const { isSmtpConfigured, collectAlertRecipientsFromCtx } = require('../notifications/nonComplianceAlert');
-    const g = (key) => (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+    const { smtpSummary } = require('../../server/email');
     return {
       smtp_configured: isSmtpConfigured(),
-      alerts_enabled: g('email_alerts_enabled') === '1',
-      facility_email: g('facility_email') || '',
-      recipient_count: collectAlertRecipientsFromCtx(get, all).length,
+      smtp: smtpSummary(),
+      alerts_enabled: (await settingValue(get, 'email_alerts_enabled')) === '1',
+      facility_email: (await settingValue(get, 'facility_email')) || '',
+      recipient_count: (await collectAlertRecipientsFromCtx(get, all)).length,
     };
+  });
+
+  h('email:verify_smtp', async () => {
+    const { verifySmtp } = require('../../server/email');
+    return verifySmtp().then((result) => {
+      if (!result.ok) throw new Error(result.error || result.reason || 'verify_failed');
+      return result;
+    });
+  });
+
+  h('email:send_test', async ({ get }, { to } = {}) => {
+    const { sendMail, isSmtpConfigured } = require('../../server/email');
+    if (!isSmtpConfigured()) throw new Error('smtp_not_configured');
+    const recipient = String(to || (await settingValue(get, 'facility_email')) || '').trim();
+    if (!recipient) throw new Error('no_recipient');
+    const facilityName = (await settingValue(get, 'facility_name')) || 'FacilityOS';
+    const result = await sendMail({
+      to: recipient,
+      subject: `[FacilityOS] Test email — ${facilityName}`,
+      text: [
+        `${facilityName}`,
+        '',
+        'This is a test alert email from FacilityOS.',
+        '',
+        'If you received this message, SMTP is configured correctly on the data server.',
+        `Sent at: ${new Date().toISOString()}`,
+      ].join('\n'),
+    });
+    if (!result.ok) throw new Error(result.error || result.reason || 'send_failed');
+    return { ok: true, messageId: result.messageId, to: recipient };
   });
 
   const { registerV15Handlers } = require('./handlers-v15');

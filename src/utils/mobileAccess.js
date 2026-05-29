@@ -1,6 +1,7 @@
 const STORAGE_SERVER = 'facilityos_server_url';
 const STORAGE_TERMINAL = 'facilityos_terminal';
 const STORAGE_TOKEN = 'facilityos_access_token';
+const STORAGE_SESSION = 'facilityos_session_token';
 
 /** Runtime check — preload APIs exist in packaged desktop shell. */
 export function isElectron() {
@@ -29,8 +30,24 @@ export function setAccessToken(token) {
   else localStorage.removeItem(STORAGE_TOKEN);
 }
 
+export function getSessionToken() {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(STORAGE_SESSION) || null;
+}
+
+export function setSessionToken(token) {
+  if (typeof window === 'undefined') return;
+  if (token) localStorage.setItem(STORAGE_SESSION, token);
+  else localStorage.removeItem(STORAGE_SESSION);
+}
+
 export function buildAuthHeaders(extra = {}) {
   const headers = { ...extra };
+  const session = getSessionToken();
+  if (session) {
+    headers.Authorization = `Bearer ${session}`;
+    return headers;
+  }
   const token = getAccessToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;

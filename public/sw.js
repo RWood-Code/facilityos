@@ -1,5 +1,5 @@
-const CACHE = 'facilityos-shell-v1';
-const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.svg'];
+const CACHE = 'facilityos-shell-v2';
+const SHELL = ['./', './index.html', './manifest.webmanifest', './manifest.cloud.webmanifest', './icon-192.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -31,5 +31,35 @@ self.addEventListener('fetch', (event) => {
         return response;
       })
       .catch(() => caches.match(request).then((r) => r || caches.match('./index.html')))
+  );
+});
+
+self.addEventListener('push', (event) => {
+  let payload = { title: 'FacilityOS', body: 'New alert from your facility' };
+  try {
+    if (event.data) payload = { ...payload, ...event.data.json() };
+  } catch { /* use defaults */ }
+
+  event.waitUntil(
+    self.registration.showNotification(payload.title || 'FacilityOS', {
+      body: payload.body || '',
+      icon: './icon-192.svg',
+      badge: './icon-192.svg',
+      tag: payload.data?.pool_id || 'facilityos-alert',
+      data: payload.data || {},
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if ('focus' in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow('./');
+      return undefined;
+    })
   );
 });

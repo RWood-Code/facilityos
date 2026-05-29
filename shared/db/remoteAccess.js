@@ -33,14 +33,14 @@ function extractAccessToken(req) {
   return (req.headers['x-facilityos-token'] || '').trim() || null;
 }
 
-function readRemoteSettings(get) {
-  const enabled = (get(`SELECT value FROM setting WHERE key='remote_access_enabled'`) || {}).value === '1';
-  const token = (get(`SELECT value FROM setting WHERE key='remote_access_token'`) || {}).value || '';
+async function readRemoteSettings(get) {
+  const enabled = (await get(`SELECT value FROM setting WHERE key='remote_access_enabled'`) || {}).value === '1';
+  const token = (await get(`SELECT value FROM setting WHERE key='remote_access_token'`) || {}).value || '';
   return { enabled, token };
 }
 
-function verifyRemoteAccess(req, get) {
-  const { enabled, token } = readRemoteSettings(get);
+async function verifyRemoteAccess(req, get) {
+  const { enabled, token } = await readRemoteSettings(get);
   if (isLocalOrPrivateRequest(req)) return { allowed: true, reason: 'local' };
   if (!enabled) return { allowed: false, reason: 'lan_only' };
   const provided = extractAccessToken(req);

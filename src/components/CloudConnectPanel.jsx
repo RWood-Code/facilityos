@@ -162,6 +162,12 @@ export default function CloudConnectPanel() {
         </div>
       )}
 
+      {status?.relay_url?.includes('relay.facilityos.nz') && !status?.paired && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
+          <strong>Local dev:</strong> set relay URL to <code className="bg-white px-1 rounded">http://127.0.0.1:4850</code> and click <strong>Save relay URL</strong> before pairing.
+        </div>
+      )}
+
       {status?.paired && (
         <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-4">
           <Btn variant="secondary" onClick={syncNow} disabled={busy}>Sync now</Btn>

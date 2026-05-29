@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { prepareSql } = require('./adapters/sql');
 
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 
@@ -37,6 +38,13 @@ function loadMigrationFiles() {
     .filter((m) => m.version > 0);
 }
 
+function splitStatements(sql) {
+  return sql
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function runMigrations(db) {
   ensureVersionTable(db);
   const current = getCurrentVersion(db);
@@ -45,10 +53,7 @@ function runMigrations(db) {
 
   for (const migration of migrations) {
     if (migration.version <= current) continue;
-    const statements = migration.sql
-      .split(';')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const statements = splitStatements(migration.sql);
     for (const stmt of statements) {
       try {
         db.exec(stmt);
@@ -67,4 +72,48 @@ function runMigrations(db) {
   return { current: getCurrentVersion(db), applied };
 }
 
-module.exports = { runMigrations, getCurrentVersion, loadMigrationFiles };
+async function ensurePostgresVersionTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version INTEGER PRIMARY KEY,
+      applied_at TIMESTAMPTZ DEFAULT NOW(),
+      description TEXT
+    )
+  `);
+}
+
+async function getPostgresCurrentVersion(pool) {
+  await ensurePostgresVersionTable(pool);
+  const result = await pool.query('SELECT COALESCE(MAX(version), 0) AS v FROM schema_version');
+  return result.rows[0]?.v || 0;
+}
+
+async function runPostgresMigrations(pool) {
+  await ensurePostgresVersionTable(pool);
+  const current = await getPostgresCurrentVersion(pool);
+  const migrations = loadMigrationFiles();
+  let applied = 0;
+
+  for (const migration of migrations) {
+    if (migration.version <= current) continue;
+    const statements = splitStatements(migration.sql);
+    for (const stmt of statements) {
+      const pgStmt = prepareSql(stmt, 'postgres');
+      try {
+        await pool.query(pgStmt);
+      } catch (e) {
+        if (!/already exists|duplicate column/i.test(e.message)) throw e;
+      }
+    }
+    await pool.query(
+      'INSERT INTO schema_version (version, description) VALUES ($1, $2)',
+      [migration.version, migration.description]
+    );
+    applied++;
+    console.log(`[migrate:postgres] applied v${migration.version}: ${migration.description}`);
+  }
+
+  return { current: await getPostgresCurrentVersion(pool), applied };
+}
+
+module.exports = { runMigrations, runPostgresMigrations, getCurrentVersion, loadMigrationFiles };

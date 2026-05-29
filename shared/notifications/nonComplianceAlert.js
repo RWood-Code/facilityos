@@ -1,17 +1,18 @@
 const { sendMail, isSmtpConfigured } = require('../../server/email');
 
-function setting(get, key) {
-  return (get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
+async function setting(get, key) {
+  return (await get(`SELECT value FROM setting WHERE key=?`, [key]) || {}).value || '';
 }
 
-function collectAlertRecipientsFromCtx(get, all) {
+async function collectAlertRecipientsFromCtx(get, all) {
   const emails = new Set();
-  const facilityEmail = setting(get, 'facility_email').trim();
+  const facilityEmail = (await setting(get, 'facility_email')).trim();
   if (facilityEmail) emails.add(facilityEmail);
 
   if (all) {
     try {
-      for (const row of all(`SELECT email FROM staff WHERE status='active' AND email IS NOT NULL AND email != '' AND role IN ('manager','admin','supervisor')`)) {
+      const rows = await all(`SELECT email FROM staff WHERE status='active' AND email IS NOT NULL AND email != '' AND role IN ('manager','admin','supervisor')`);
+      for (const row of rows) {
         if (row.email?.trim()) emails.add(row.email.trim());
       }
     } catch { /* staff table may not exist */ }
@@ -20,20 +21,20 @@ function collectAlertRecipientsFromCtx(get, all) {
   return [...emails];
 }
 
-function shouldSendAlerts(get) {
-  if (setting(get, 'email_alerts_enabled') !== '1') return false;
+async function shouldSendAlerts(get) {
+  if ((await setting(get, 'email_alerts_enabled')) !== '1') return false;
   if (!isSmtpConfigured()) return false;
   return true;
 }
 
 async function sendNonComplianceEmail(ctx, { poolName, testDate, testTime, poolId, testId }) {
   const { get, all, run } = ctx;
-  if (!shouldSendAlerts(get)) return { skipped: true };
+  if (!(await shouldSendAlerts(get))) return { skipped: true };
 
-  const recipients = collectAlertRecipientsFromCtx(get, all);
+  const recipients = await collectAlertRecipientsFromCtx(get, all);
   if (!recipients.length) return { skipped: true, reason: 'no_recipients' };
 
-  const facilityName = setting(get, 'facility_name') || 'FacilityOS facility';
+  const facilityName = (await setting(get, 'facility_name')) || 'FacilityOS facility';
   const when = [testDate, testTime].filter(Boolean).join(' ') || new Date().toISOString().slice(0, 16);
   const subject = `[FacilityOS] Non-compliant pool test — ${poolName || 'Unknown pool'}`;
   const text = [
@@ -53,7 +54,7 @@ async function sendNonComplianceEmail(ctx, { poolName, testDate, testTime, poolI
   if (run && result.ok) {
     try {
       const { writeAudit } = require('../db/audit');
-      writeAudit({ run, get, all: all || (() => []) }, {
+      await writeAudit({ run, get, all: all || (() => []) }, {
         action: 'alert.email.non_compliance',
         entity_type: 'test_result',
         entity_id: testId || poolId || '',

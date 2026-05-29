@@ -7,7 +7,9 @@ import {
   clearCloudSession,
   subscribeCloudPush,
   fetchVapidPublicKey,
+  urlBase64ToUint8Array,
 } from '../../utils/cloudRelay';
+import InstallPrompt from '../../components/InstallPrompt';
 
 function StatCard({ label, value, tone = 'text-gray-900' }) {
   return (
@@ -51,7 +53,7 @@ export default function CloudManagerView() {
         if (!sub) {
           sub = await reg.pushManager.subscribe({
             userVisibleOnly: true,
-            applicationServerKey: vapid,
+            applicationServerKey: urlBase64ToUint8Array(vapid),
           });
         }
         await subscribeCloudPush(sub.toJSON());
@@ -80,6 +82,7 @@ export default function CloudManagerView() {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-8">
+      <InstallPrompt variant="cloud" />
       <header className="bg-white border-b border-gray-200 px-4 py-4 safe-area-pad">
         <div className="max-w-3xl mx-auto flex items-start justify-between gap-3">
           <div>

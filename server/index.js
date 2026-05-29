@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * FacilityOS data server — shared SQLite for all terminals on the LAN.
- * Run standalone or spawned by the Electron "server" terminal.
+ * FacilityOS data server — Express API + SQLite or PostgreSQL.
+ * Run standalone, in Docker, on Azure App Service, or spawned by Electron.
  */
 const express = require('express');
 const cors = require('cors');
@@ -9,10 +9,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { FacilityDatabase } = require('./db');
+const { getDeploymentConfig } = require('../shared/db/deployment');
 const { isChannelAllowed } = require('../shared/db/entitlements');
 const { verifyRemoteAccess, readRemoteSettings } = require('../shared/db/remoteAccess');
+const { createApiAuthMiddleware, registerAuthRoutes, isSessionBypass } = require('./auth/routes');
+const { getStorageAdapter } = require('./storage');
+const { requireRestoreRole } = require('./security');
+const { pinLoginRateLimit, checkRateLimit } = require('./auth/rateLimit');
+const { assertAllowedUpload, contentTypeForFilename } = require('./storage/validate');
 const { getDistPath } = require('../electron/paths');
 const { setLicenceDataDir } = require('../shared/db/licencePaths');
+const { migratePlaintextPins } = require('../shared/db/pinAuth');
 
 const PORT = Number(process.env.FACILITYOS_PORT || 3847);
 const HOST = process.env.FACILITYOS_HOST || '0.0.0.0';
@@ -25,6 +32,7 @@ const DB_PATH = process.env.FACILITYOS_DB_PATH || path.join(DATA_DIR, 'facilityo
 const UPLOADS_DIR = path.join(path.dirname(DATA_DIR), 'uploads');
 
 let database;
+let deploymentConfig;
 let backupTimer;
 const startTime = Date.now();
 const activeTerminals = new Map();
@@ -40,25 +48,40 @@ function getLanAddresses() {
 }
 
 function getDatabase() {
-  if (!database) database = new FacilityDatabase(DB_PATH);
+  if (!database) throw new Error('Database not initialized — call bootstrapDatabase() first');
   return database;
 }
 
-function scheduleAutoBackup() {
+async function bootstrapDatabase() {
+  if (database) return database;
+  deploymentConfig = getDeploymentConfig();
+  const openOptions = deploymentConfig.dbDriver === 'postgres'
+    ? {}
+    : { dbPath: DB_PATH };
+  database = await FacilityDatabase.open(openOptions);
+  await migratePlaintextPins(database.api);
+  return database;
+}
+
+async function scheduleAutoBackup() {
   if (backupTimer) clearInterval(backupTimer);
+  if (deploymentConfig?.dbDriver === 'postgres') {
+    console.log('[backup] automatic file backups disabled on hosted postgres');
+    return;
+  }
 
   const db = getDatabase();
-  if (!db._autoBackupEnabled()) {
+  if (!(await db._autoBackupEnabledAsync())) {
     console.log('[backup] automatic backups disabled');
     return;
   }
 
-  const hours = db._backupIntervalHours();
+  const hours = await db._backupIntervalHours();
   const intervalMs = Math.max(hours, 1) * 60 * 60 * 1000;
 
-  const run = () => {
+  const run = async () => {
     try {
-      const result = db.backup(undefined, { actor: 'system', terminalId: 'auto' });
+      const result = await db.backup(undefined, { actor: 'system', terminalId: 'auto' });
       console.log('[backup] automatic backup saved:', result.path);
     } catch (e) {
       console.error('[backup] automatic backup failed:', e.message);
@@ -71,59 +94,82 @@ function scheduleAutoBackup() {
 }
 
 function createApp() {
+  const cfg = deploymentConfig || getDeploymentConfig();
   const app = express();
-  app.set('trust proxy', true);
-  app.use(cors());
-  app.use(express.json({ limit: '4mb' }));
+  app.set('trust proxy', cfg.isHosted ? 1 : false);
 
-  function remoteAuth(req, res, next) {
-    if (req.method === 'GET' && req.path === '/api/health') return next();
-    if (!req.path.startsWith('/api')) return next();
-    try {
-      const db = getDatabase();
-      const auth = verifyRemoteAccess(req, db.api.get.bind(db.api));
-      if (auth.allowed) return next();
-      return res.status(401).json({ ok: false, error: auth.reason || 'remote_auth_required' });
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: e.message });
-    }
+  if (cfg.isHosted && cfg.publicUrl) {
+    app.use(cors({ origin: cfg.publicUrl, credentials: true }));
+  } else {
+    app.use(cors());
   }
 
-  app.use(remoteAuth);
+  app.use(express.json({ limit: '4mb' }));
 
-  app.get('/api/health', (req, res) => {
-    const db = getDatabase();
-    const distPath = path.join(__dirname, '../dist');
-    const lanIps = getLanAddresses();
-    const port = Number(process.env.FACILITYOS_PORT || PORT);
-    const remote = readRemoteSettings(db.api.get.bind(db.api));
-    const auth = verifyRemoteAccess(req, db.api.get.bind(db.api));
-    res.json({
-      ok: true,
-      service: 'FacilityOS Data Server',
-      version: '1.6.0',
-      schemaVersion: db.getSchemaVersion(),
-      uptimeSec: Math.floor((Date.now() - startTime) / 1000),
-      dbPath: DB_PATH,
-      dataDir: DATA_DIR,
-      hostname: os.hostname(),
-      lanIps,
-      port,
-      webUiAvailable: fs.existsSync(path.join(distPath, 'index.html')),
-      remoteAccess: {
-        enabled: remote.enabled,
-        tokenRequired: remote.enabled && auth.reason !== 'local',
-        lanOnly: !remote.enabled && auth.reason !== 'local',
-      },
-      mobileUrls: lanIps.length
-        ? lanIps.map((ip) => ({
-            ip,
-            home: `http://${ip}:${port}/`,
-            steamTablet: `http://${ip}:${port}/#steam-tablet`,
-            manager: `http://${ip}:${port}/#manager`,
-          }))
-        : [],
-    });
+  registerAuthRoutes(app, getDatabase);
+  app.use(createApiAuthMiddleware(getDatabase));
+
+  app.get('/api/health', async (req, res) => {
+    try {
+      const db = getDatabase();
+      const distPath = path.join(__dirname, '../dist');
+      const cfg = deploymentConfig || getDeploymentConfig();
+      const isLocal = isSessionBypass(req, cfg) || (cfg.authMode === 'legacy' && (await verifyRemoteAccess(req, db.api.get.bind(db.api))).reason === 'local');
+
+      if (!isLocal && cfg.isHosted) {
+        return res.json({
+          ok: true,
+          service: 'FacilityOS Data Server',
+          version: '1.7.1-security',
+          uptimeSec: Math.floor((Date.now() - startTime) / 1000),
+        });
+      }
+
+      const lanIps = getLanAddresses();
+      const port = Number(process.env.FACILITYOS_PORT || PORT);
+      const remote = await readRemoteSettings(db.api.get.bind(db.api));
+      const auth = await verifyRemoteAccess(req, db.api.get.bind(db.api));
+
+      res.json({
+        ok: true,
+        service: 'FacilityOS Data Server',
+        version: '1.7.1-security',
+        schemaVersion: db.getSchemaVersion(),
+        uptimeSec: Math.floor((Date.now() - startTime) / 1000),
+        deployment: {
+          mode: cfg.deployment,
+          dbDriver: cfg.dbDriver,
+          storage: cfg.storageBackend,
+          authMode: cfg.authMode,
+          publicUrl: cfg.publicUrl,
+        },
+        dbPath: cfg.dbDriver === 'sqlite' ? DB_PATH : null,
+        dataDir: cfg.dbDriver === 'sqlite' ? DATA_DIR : null,
+        hostname: os.hostname(),
+        lanIps,
+        port,
+        webUiAvailable: fs.existsSync(path.join(distPath, 'index.html')),
+        auth: {
+          mode: cfg.authMode,
+          sessionLogin: cfg.authMode === 'session' ? '/api/auth/pin' : null,
+        },
+        remoteAccess: {
+          enabled: remote.enabled,
+          tokenRequired: cfg.authMode === 'legacy' && remote.enabled && auth.reason !== 'local',
+          lanOnly: cfg.authMode === 'legacy' && !remote.enabled && auth.reason !== 'local',
+        },
+        mobileUrls: lanIps.length
+          ? lanIps.map((ip) => ({
+              ip,
+              home: `http://${ip}:${port}/`,
+              steamTablet: `http://${ip}:${port}/#steam-tablet`,
+              manager: `http://${ip}:${port}/#manager`,
+            }))
+          : [],
+      });
+    } catch (e) {
+      res.status(503).json({ ok: false, error: e.message });
+    }
   });
 
   const LICENCE_EXEMPT = new Set([
@@ -136,20 +182,29 @@ function createApp() {
     'cloud:status', 'cloud:configure', 'cloud:pairing_code', 'cloud:sync_now',
     'cloud:pair', 'cloud:agent_credentials', 'cloud:outbox_pending', 'cloud:outbox_ack',
     'cloud:outbox_error', 'cloud:enqueue_demo', 'cloud:create_mobile_user',
-    'email:status',
+    'email:status', 'email:verify_smtp', 'email:send_test',
     'staff:by_pin',
   ]);
 
-  app.post('/api/query', (req, res) => {
+  app.post('/api/query', async (req, res) => {
     const { channel, args, terminalId } = req.body || {};
     if (!channel) {
       return res.status(400).json({ ok: false, error: 'channel required' });
     }
+    if (channel === 'staff:by_pin') {
+      const limited = checkRateLimit(req);
+      if (limited.blocked) return res.status(limited.statusCode).json(limited.body);
+    }
+    const cfg = deploymentConfig || getDeploymentConfig();
     const { isLocalOrPrivateRequest } = require('../shared/db/remoteAccess');
+    if (channel === 'staff:by_pin' && cfg.authMode === 'session' && !isSessionBypass(req, cfg)) {
+      return res.status(401).json({ ok: false, error: 'use_auth_pin' });
+    }
     const LOCAL_ADMIN_CHANNELS = new Set([
       'remote:enable', 'remote:disable', 'remote:rotate_token',
       'cloud:configure', 'cloud:pairing_code', 'cloud:sync_now', 'cloud:pair', 'cloud:enqueue_demo',
       'cloud:create_mobile_user',
+      'email:verify_smtp', 'email:send_test',
     ]);
     if (LOCAL_ADMIN_CHANNELS.has(channel) && !isLocalOrPrivateRequest(req)) {
       return res.status(403).json({ ok: false, error: 'local_admin_required' });
@@ -159,7 +214,7 @@ function createApp() {
     }
     try {
       if (!LICENCE_EXEMPT.has(channel)) {
-        const lic = getDatabase().query('licence:status');
+        const lic = await getDatabase().query('licence:status');
         if (!lic.valid) {
           return res.status(402).json({ ok: false, error: 'licence_expired', data: lic });
         }
@@ -167,13 +222,8 @@ function createApp() {
           return res.status(403).json({ ok: false, error: 'module_not_licensed', data: lic });
         }
       }
-      const data = getDatabase().query(channel, args);
-      Promise.resolve(data)
-        .then((resolved) => res.json({ ok: true, data: resolved }))
-        .catch((e) => {
-          console.error('[query]', channel, e.message);
-          res.status(500).json({ ok: false, error: e.message });
-        });
+      const data = await getDatabase().query(channel, args);
+      res.json({ ok: true, data });
     } catch (e) {
       console.error('[query]', channel, e.message);
       res.status(500).json({ ok: false, error: e.message });
@@ -196,74 +246,65 @@ function createApp() {
     }
   });
 
-  app.post('/api/backup', (req, res) => {
+  app.post('/api/backup', async (req, res) => {
     try {
       const { terminalId, actor } = req.body || {};
-      const data = getDatabase().backup(undefined, { terminalId, actor });
+      const data = await getDatabase().backup(undefined, { terminalId, actor });
       res.json({ ok: true, data });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
 
-  app.post('/api/backup/restore', (req, res) => {
+  app.post('/api/backup/restore', async (req, res) => {
+    if (!requireRestoreRole(req, res)) return;
     const { filename, terminalId, actor } = req.body || {};
     if (!filename) {
       return res.status(400).json({ ok: false, error: 'filename required' });
     }
     try {
-      const data = getDatabase().restore(filename, { terminalId, actor });
+      const data = await getDatabase().restore(filename, { terminalId, actor });
       res.json({ ok: true, data });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
 
-  app.post('/api/upload', express.json({ limit: '20mb' }), (req, res) => {
+  app.post('/api/upload', express.json({ limit: '20mb' }), async (req, res) => {
     try {
       const { filename, data, subfolder = 'iltp' } = req.body || {};
       if (!filename || !data) {
         return res.status(400).json({ ok: false, error: 'filename and data required' });
       }
-      const safeFolder = String(subfolder).replace(/[^a-z0-9_-]/gi, '') || 'iltp';
-      const safeName = path.basename(String(filename)).replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storedName = `${Date.now().toString(36)}-${safeName}`;
-      const dir = path.join(UPLOADS_DIR, safeFolder);
-      fs.mkdirSync(dir, { recursive: true });
-      const buf = Buffer.from(data, 'base64');
-      if (buf.length > 15 * 1024 * 1024) {
-        return res.status(413).json({ ok: false, error: 'file too large (max 15 MB)' });
-      }
-      fs.writeFileSync(path.join(dir, storedName), buf);
-      const stored_path = `${safeFolder}/${storedName}`;
-      res.json({
-        ok: true,
-        data: {
-          name: safeName,
-          stored_path,
-          url: `/api/uploads/${stored_path}`,
-          size: buf.length,
-        },
-      });
+      assertAllowedUpload(filename);
+      const storage = getStorageAdapter({ uploadsDir: UPLOADS_DIR, deploymentConfig });
+      const saved = await storage.save({ filename, data, subfolder });
+      res.json({ ok: true, data: saved });
+    } catch (e) {
+      res.status(e.status || 500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/uploads/:folder/:file', async (req, res) => {
+    try {
+      const storedPath = `${path.basename(req.params.folder)}/${path.basename(req.params.file)}`;
+      const storage = getStorageAdapter({ uploadsDir: UPLOADS_DIR, deploymentConfig });
+      const file = await storage.open(storedPath);
+      if (!file) return res.status(404).json({ ok: false, error: 'not found' });
+      const contentType = file.contentType || contentTypeForFilename(req.params.file);
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${path.basename(req.params.file)}"`);
+      if (file.size) res.setHeader('Content-Length', String(file.size));
+      file.stream.pipe(res);
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
 
-  app.get('/api/uploads/:folder/:file', (req, res) => {
-    const folder = path.basename(req.params.folder);
-    const file = path.basename(req.params.file);
-    const fp = path.resolve(UPLOADS_DIR, folder, file);
-    if (!fp.startsWith(path.resolve(UPLOADS_DIR))) {
-      return res.status(403).json({ ok: false, error: 'forbidden' });
-    }
-    if (!fs.existsSync(fp)) return res.status(404).json({ ok: false, error: 'not found' });
-    res.sendFile(fp);
-  });
-
-  app.get('/api/integrity', (_req, res) => {
+  app.get('/api/integrity', async (_req, res) => {
     try {
-      res.json({ ok: true, data: getDatabase().integrityCheck() });
+      const data = await getDatabase().integrityCheck();
+      res.json({ ok: true, data });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
@@ -281,26 +322,32 @@ function createApp() {
   return app;
 }
 
-function startServer(options = {}) {
+async function startServer(options = {}) {
   const port = options.port || PORT;
   const host = options.host || HOST;
   setLicenceDataDir(DATA_DIR);
+  deploymentConfig = getDeploymentConfig();
+  await bootstrapDatabase();
+
   const app = createApp();
   return new Promise((resolve, reject) => {
-    const server = app.listen(port, host, () => {
-      getDatabase();
+    const server = app.listen(port, host, async () => {
       try {
-        const sync = getDatabase().query('licence:sync_from_file');
+        const sync = await getDatabase().query('licence:sync_from_file');
         if (sync?.synced) {
           console.log(`[licence] Loaded ${sync.licence_key} from licence file (expires ${sync.expires_at})`);
         }
       } catch (e) {
         console.warn('[licence] Could not load licence file:', e.message);
       }
-      scheduleAutoBackup();
+      await scheduleAutoBackup();
+      const cfg = deploymentConfig;
       console.log(`FacilityOS server listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
-      console.log(`Database: ${DB_PATH}`);
-      resolve({ app, server, port, host, dbPath: DB_PATH });
+      getStorageAdapter({ uploadsDir: UPLOADS_DIR, deploymentConfig: cfg });
+      console.log(`Deployment: ${cfg.deployment} (${cfg.dbDriver}, auth=${cfg.authMode}, storage=${cfg.storageBackend})`);
+      if (cfg.dbDriver === 'sqlite') console.log(`Database: ${DB_PATH}`);
+      else console.log(`Database: PostgreSQL (${process.env.FACILITYOS_DATABASE_URL ? 'configured' : 'DATABASE_URL'})`);
+      resolve({ app, server, port, host, dbPath: DB_PATH, deployment: cfg });
     });
     server.on('error', reject);
   });
@@ -313,4 +360,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startServer, createApp, getDatabase, DB_PATH, DATA_DIR, UPLOADS_DIR };
+module.exports = {
+  startServer,
+  createApp,
+  getDatabase,
+  bootstrapDatabase,
+  DB_PATH,
+  DATA_DIR,
+  UPLOADS_DIR,
+};

@@ -70,6 +70,16 @@ export default function Settings() {
   const [integrity, setIntegrity] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [emailStatus, setEmailStatus] = useState(null);
+  const [emailBusy, setEmailBusy] = useState(false);
+
+  async function refreshEmailStatus() {
+    try {
+      setEmailStatus(await dbQuery('email:status'));
+    } catch {
+      setEmailStatus(null);
+    }
+  }
 
   async function refreshBackups() {
     try {
@@ -97,6 +107,10 @@ export default function Settings() {
       setAuditLog([]);
     }
   }
+
+  useEffect(() => {
+    if (tab === 'facility') refreshEmailStatus();
+  }, [tab, local.facility_email, local.email_alerts_enabled]);
 
   useEffect(() => {
     const syncTab = () => {
@@ -267,6 +281,59 @@ export default function Settings() {
               />
               Email on non-compliant pool tests
             </label>
+            {emailStatus && (
+              <div className={`mt-4 rounded-lg border px-3 py-3 text-xs space-y-2 ${emailStatus.smtp_configured ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+                <p className="font-semibold">
+                  {emailStatus.smtp_configured
+                    ? `SMTP ready · ${emailStatus.smtp?.host}:${emailStatus.smtp?.port}`
+                    : 'SMTP not configured on data server'}
+                </p>
+                {!emailStatus.smtp_configured && (
+                  <p>Set <code className="bg-white/80 px-1 rounded">SMTP_HOST</code> (and restart the server) on the data server PC, then verify below.</p>
+                )}
+                {emailStatus.smtp_configured && (
+                  <p>{emailStatus.recipient_count} alert recipient(s) · alerts {emailStatus.alerts_enabled ? 'enabled' : 'disabled'}</p>
+                )}
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <Btn
+                    size="sm"
+                    variant="secondary"
+                    disabled={emailBusy || !emailStatus.smtp_configured}
+                    onClick={async () => {
+                      setEmailBusy(true);
+                      try {
+                        await dbQuery('email:verify_smtp');
+                        toast('SMTP connection verified');
+                      } catch (e) {
+                        toast(e.message || 'SMTP verify failed', 'error');
+                      } finally {
+                        setEmailBusy(false);
+                      }
+                    }}
+                  >
+                    Verify SMTP
+                  </Btn>
+                  <Btn
+                    size="sm"
+                    variant="secondary"
+                    disabled={emailBusy || !emailStatus.smtp_configured || !local.facility_email?.trim()}
+                    onClick={async () => {
+                      setEmailBusy(true);
+                      try {
+                        const r = await dbQuery('email:send_test');
+                        toast(`Test email sent to ${r.to}`);
+                      } catch (e) {
+                        toast(e.message || 'Send failed', 'error');
+                      } finally {
+                        setEmailBusy(false);
+                      }
+                    }}
+                  >
+                    Send test email
+                  </Btn>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

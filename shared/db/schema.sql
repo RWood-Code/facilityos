@@ -97,13 +97,13 @@ INSERT OR IGNORE INTO setting VALUES ('show_staff','1');
 INSERT OR IGNORE INTO setting VALUES ('show_reports','1');
 INSERT OR IGNORE INTO setting VALUES ('show_rostering','0');
 INSERT OR IGNORE INTO setting VALUES ('data_mode','server');
-INSERT OR IGNORE INTO setting VALUES ('facility_name','EA Networks Centre');
+INSERT OR IGNORE INTO setting VALUES ('facility_name','Demo Aquatic Centre');
 
 INSERT OR IGNORE INTO module_registry (id, module_key, label, enabled, sort_order) VALUES
   ('mod_core', 'core', 'Core Operations', 1, 0),
   ('mod_roster', 'rostering', 'Staff Rostering', 0, 10);
 
-INSERT OR IGNORE INTO facility (id,name,location,is_active) VALUES ('fac1','EA Networks Centre','Ashburton, NZ',1);
+INSERT OR IGNORE INTO facility (id,name,location,is_active) VALUES ('fac1','Demo Aquatic Centre','New Zealand',1);
 
 INSERT OR IGNORE INTO pool (id,facility_id,name,type,volume_litres,sort_order) VALUES
   ('pool1','fac1','Main Pool','pool',1100000,1),

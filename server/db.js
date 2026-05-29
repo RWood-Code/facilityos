@@ -1,74 +1,65 @@
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const { openDatabase } = require('../shared/db/adapters');
+const { getDeploymentConfig } = require('../shared/db/deployment');
 const { executeQuery } = require('../shared/db/handlers');
-const { runMigrations, getCurrentVersion } = require('../shared/db/migrate');
 const { writeAudit } = require('../shared/db/audit');
+const { setLicenceDataDir } = require('../shared/db/licencePaths');
+const { backupsDirFor } = require('../shared/db/adapters/sqlite');
 
-const SCHEMA_PATH = path.join(__dirname, '../shared/db/schema.sql');
-const SCHEMA_EXT_PATH = path.join(__dirname, '../shared/db/schema-extensions.sql');
-
-function createDbApi(db) {
-  return {
-    run(sql, params = []) {
-      db.prepare(sql).run(...params);
-    },
-    get(sql, params = []) {
-      return db.prepare(sql).get(...params) || null;
-    },
-    all(sql, params = []) {
-      return db.prepare(sql).all(...params);
-    },
-  };
-}
-
-function backupsDirFor(dataDir) {
-  return path.join(dataDir, 'backups');
+function isAsyncDriver(dialect) {
+  return dialect === 'postgres';
 }
 
 class FacilityDatabase {
-  constructor(dbPath) {
-    const dir = path.dirname(dbPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  /**
+   * @param {object} conn — result from openDatabase()
+   */
+  constructor(conn) {
+    this.conn = conn;
+    this.dialect = conn.dialect;
+    this.deployment = conn.deployment || getDeploymentConfig();
+    this.dbPath = conn.dbPath || null;
+    this.dataDir = conn.dataDir || (conn.dbPath ? path.dirname(conn.dbPath) : null);
+    this.backupsDir = this.dataDir ? backupsDirFor(this.dataDir) : null;
+    this.schemaVersion = conn.schemaVersion;
+    this.api = conn.api;
 
-    this.dbPath = dbPath;
-    this.dataDir = dir;
-    this.backupsDir = backupsDirFor(dir);
-    if (!fs.existsSync(this.backupsDir)) fs.mkdirSync(this.backupsDir, { recursive: true });
-
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.pragma('busy_timeout = 5000');
-
-    this.db.exec(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
-    if (fs.existsSync(SCHEMA_EXT_PATH)) {
-      this.db.exec(fs.readFileSync(SCHEMA_EXT_PATH, 'utf-8'));
+    if (this.backupsDir && !fs.existsSync(this.backupsDir)) {
+      fs.mkdirSync(this.backupsDir, { recursive: true });
     }
-
-    const migrationResult = runMigrations(this.db);
-    this.schemaVersion = migrationResult.current;
-
-    this.api = createDbApi(this.db);
   }
 
-  query(channel, args) {
+  static async open(options = {}) {
+    const conn = await openDatabase(options);
+    return new FacilityDatabase(conn);
+  }
+
+  /** @deprecated use FacilityDatabase.open() */
+  static syncOpenSqlite(dbPath) {
+    const { openSqliteDatabase } = require('../shared/db/adapters/sqlite');
+    const conn = openSqliteDatabase(dbPath);
+    return new FacilityDatabase({ ...conn, deployment: getDeploymentConfig() });
+  }
+
+  async query(channel, args) {
     return executeQuery(this.api, channel, args);
   }
 
   getSchemaVersion() {
-    return this.schemaVersion ?? getCurrentVersion(this.db);
+    return this.schemaVersion;
   }
 
-  integrityCheck() {
-    const rows = this.db.pragma('integrity_check');
-    const messages = rows.map((r) => r.integrity_check);
-    const ok = messages.length === 1 && messages[0] === 'ok';
-    return { ok, messages };
+  async integrityCheck() {
+    if (typeof this.conn.integrityCheck === 'function') {
+      const result = this.conn.integrityCheck();
+      return result instanceof Promise ? result : result;
+    }
+    return { ok: false, messages: ['integrity check not available'] };
   }
 
   listBackups() {
-    if (!fs.existsSync(this.backupsDir)) return [];
+    if (!this.backupsDir || !fs.existsSync(this.backupsDir)) return [];
     return fs
       .readdirSync(this.backupsDir)
       .filter((f) => f.endsWith('.db') && !f.endsWith('.db-wal') && !f.endsWith('.db-shm'))
@@ -85,15 +76,22 @@ class FacilityDatabase {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  backup(destPath, meta = {}) {
+  async backup(destPath, meta = {}) {
+    if (this.dialect === 'postgres') {
+      throw new Error('SQLite-style file backup is not available on hosted postgres — use platform backup tools');
+    }
+
+    const Database = require('better-sqlite3');
     const target = destPath || path.join(
       this.backupsDir,
       `facilityos-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.db`
     );
-    this.db.pragma('wal_checkpoint(TRUNCATE)');
-    this.db.backup(target);
 
-    writeAudit(this.api, {
+    const db = this.conn.native;
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.backup(target);
+
+    await writeAudit(this.api, {
       action: 'backup.create',
       entity_type: 'database',
       entity_id: path.basename(target),
@@ -102,53 +100,99 @@ class FacilityDatabase {
       details: { path: target, sizeBytes: fs.statSync(target).size },
     });
 
-    this.pruneBackups(meta.retentionCount);
+    await this.pruneBackupsAsync(meta.retentionCount);
     return { path: target, filename: path.basename(target), sizeBytes: fs.statSync(target).size };
   }
 
   pruneBackups(retentionCount) {
-    const count = retentionCount ?? this._retentionFromSettings();
+    const count = retentionCount ?? 14;
     const backups = this.listBackups();
     if (backups.length <= count) return { pruned: 0 };
     const toRemove = backups.slice(count);
     toRemove.forEach((b) => {
       fs.unlinkSync(b.path);
-      const wal = `${b.path}-wal`;
-      const shm = `${b.path}-shm`;
-      if (fs.existsSync(wal)) fs.unlinkSync(wal);
-      if (fs.existsSync(shm)) fs.unlinkSync(shm);
+      ['-wal', '-shm'].forEach((suffix) => {
+        const sidecar = `${b.path}${suffix}`;
+        if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
+      });
+    });
+    return { pruned: toRemove.length };
+  }
+
+  async pruneBackupsAsync(retentionCount) {
+    const count = retentionCount ?? await this._retentionFromSettingsAsync();
+    const backups = this.listBackups();
+    if (backups.length <= count) return { pruned: 0 };
+    const toRemove = backups.slice(count);
+    toRemove.forEach((b) => {
+      fs.unlinkSync(b.path);
+      ['-wal', '-shm'].forEach((suffix) => {
+        const sidecar = `${b.path}${suffix}`;
+        if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
+      });
     });
     return { pruned: toRemove.length };
   }
 
   _retentionFromSettings() {
     try {
-      const row = this.api.get(`SELECT value FROM setting WHERE key='backup_retention_count'`);
+      const row = isAsyncDriver(this.dialect)
+        ? null
+        : this.api.get(`SELECT value FROM setting WHERE key='backup_retention_count'`);
+      if (isAsyncDriver(this.dialect)) return 14;
       return parseInt(row?.value || '14', 10) || 14;
     } catch {
       return 14;
     }
   }
 
-  _autoBackupEnabled() {
+  async _autoBackupEnabledAsync() {
     try {
-      const row = this.api.get(`SELECT value FROM setting WHERE key='backup_auto_enabled'`);
+      const row = await this.api.get(`SELECT value FROM setting WHERE key='backup_auto_enabled'`);
       return row?.value !== '0';
     } catch {
       return true;
     }
   }
 
-  _backupIntervalHours() {
+  _autoBackupEnabled() {
+    if (this.dialect === 'sqlite') return this._autoBackupEnabledSync();
+    return true;
+  }
+
+  async _backupIntervalHours() {
     try {
-      const row = this.api.get(`SELECT value FROM setting WHERE key='backup_interval_hours'`);
+      const row = await this.api.get(`SELECT value FROM setting WHERE key='backup_interval_hours'`);
       return parseInt(row?.value || '24', 10) || 24;
     } catch {
       return 24;
     }
   }
 
-  restore(backupFilename, meta = {}) {
+  async _retentionFromSettingsAsync() {
+    try {
+      const row = await this.api.get(`SELECT value FROM setting WHERE key='backup_retention_count'`);
+      return parseInt(row?.value || '14', 10) || 14;
+    } catch {
+      return 14;
+    }
+  }
+
+  _autoBackupEnabledSync() {
+    try {
+      const row = this.conn.native.prepare(`SELECT value FROM setting WHERE key='backup_auto_enabled'`).get();
+      return row?.value !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  async restore(backupFilename, meta = {}) {
+    if (this.dialect === 'postgres') {
+      throw new Error('SQLite-style restore is not available on hosted postgres');
+    }
+
+    const Database = require('better-sqlite3');
     const backupPath = path.join(this.backupsDir, path.basename(backupFilename));
     if (!fs.existsSync(backupPath)) {
       throw new Error(`Backup not found: ${backupFilename}`);
@@ -163,23 +207,22 @@ class FacilityDatabase {
     }
 
     const preRestore = path.join(this.backupsDir, `pre-restore-${Date.now()}.db`);
-    this.backup(preRestore, { ...meta, retentionCount: this._retentionFromSettings() + 1 });
+    await this.backup(preRestore, { ...meta, retentionCount: (await this._retentionFromSettingsAsync()) + 1 });
 
-    this.db.close();
+    this.conn.native.close();
     fs.copyFileSync(backupPath, this.dbPath);
     ['-wal', '-shm'].forEach((suffix) => {
       const sidecar = `${this.dbPath}${suffix}`;
       if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
     });
 
-    this.db = new Database(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.pragma('busy_timeout = 5000');
-    this.schemaVersion = getCurrentVersion(this.db);
-    this.api = createDbApi(this.db);
+    const { openSqliteDatabase } = require('../shared/db/adapters/sqlite');
+    const reopened = openSqliteDatabase(this.dbPath);
+    this.conn = reopened;
+    this.api = reopened.api;
+    this.schemaVersion = reopened.schemaVersion;
 
-    writeAudit(this.api, {
+    await writeAudit(this.api, {
       action: 'backup.restore',
       entity_type: 'database',
       entity_id: path.basename(backupPath),
@@ -191,9 +234,12 @@ class FacilityDatabase {
     return { restoredFrom: backupPath, preRestoreBackup: preRestore };
   }
 
-  close() {
-    this.db.close();
+  async close() {
+    if (typeof this.conn.close === 'function') {
+      const result = this.conn.close();
+      if (result instanceof Promise) await result;
+    }
   }
 }
 
-module.exports = { FacilityDatabase, createDbApi, backupsDirFor };
+module.exports = { FacilityDatabase, backupsDirFor, isAsyncDriver };

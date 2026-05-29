@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and fill in values
+# cp terraform.tfvars.example terraform.tfvars
+
+site_slug   = "demo"
+environment = "staging"
+location    = "australiaeast"
+
+# Image built by: npm run docker:build  OR  ghcr.io/your-org/facilityos:latest
+docker_image = "ghcr.io/rwood-code/facilityos:latest"
+
+# For private GHCR images:
+# docker_registry_url      = "https://ghcr.io"
+# docker_registry_username = "your-github-username"
+# docker_registry_password = "ghp_..."
+
+# Optional custom domain (requires DNS + managed cert)
+# custom_domain         = "demo.facilityos.app"
+# facilityos_public_url = "https://demo.facilityos.app"
+
+postgres_sku    = "B_Standard_B1ms"
+app_service_sku = "B1"
+
+tags = {
+  customer = "Demo Aquatic Centre"
+}
