@@ -1,6 +1,6 @@
 {
   "name": "facilityos",
-  "version": "1.6.1",
+  "version": "1.6.3",
   "description": "Aquatic & recreation facility operations — multi-terminal, installable",
   "main": "electron/main.js",
   "scripts": {
@@ -12,9 +12,9 @@
     "build": "vite build",
     "build:cloud": "node scripts/build-cloud-pwa.js",
     "dist": "npm run dist:server",
-    "dist:server": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml",
-    "dist:client": "npm run build && electron-builder --win --x64 -c electron-builder.client.yml",
-    "dist:all": "npm run build && electron-builder --win --x64 -c electron-builder.server.yml && electron-builder --win --x64 -c electron-builder.client.yml && node scripts/collect-release-assets.js",
+    "dist:server": "npm run rebuild:electron && npm run build && electron-builder --win --x64 -c electron-builder.server.yml",
+    "dist:client": "npm run rebuild:electron && npm run build && electron-builder --win --x64 -c electron-builder.client.yml",
+    "dist:all": "npm run rebuild:electron && npm run build && electron-builder --win --x64 -c electron-builder.server.yml && electron-builder --win --x64 -c electron-builder.client.yml && node scripts/collect-release-assets.js",
     "dist:dir": "npm run build && electron-builder --win --x64 --dir -c electron-builder.server.yml",
     "server": "node server/index.js",
     "rebuild:node": "npm rebuild better-sqlite3",

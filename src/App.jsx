@@ -21,9 +21,11 @@ export default function App() {
   const {
     currentModule, setModule, settings, setSettings, toasts, facility, currentStaff,
     licence, setLicence, uiMode, setUiMode, sidebarOpen, setSidebarOpen, setSelectedPoolId,
+    setCurrentStaff,
   } = useAppStore();
   const [connection, setConnection] = useState({ ok: true });
   const [showSignIn, setShowSignIn] = useState(false);
+  const [authReady, setAuthReady] = useState(!isElectron());
   const isMobile = useMediaQuery('(max-width: 1023px)');
 
   useEffect(() => {
@@ -47,6 +49,29 @@ export default function App() {
   useEffect(() => {
     if (!isElectron() && isMobile && !currentStaff) setShowSignIn(true);
   }, [isMobile, currentStaff]);
+
+  useEffect(() => {
+    if (!isElectron()) return;
+    const savedId = sessionStorage.getItem('facilityos_staff_id');
+    if (!savedId) {
+      setAuthReady(true);
+      return;
+    }
+    dbQuery('staff:get', savedId)
+      .then((s) => {
+        if (s && s.status === 'active') {
+          setCurrentStaff({
+            id: s.id,
+            name: `${s.first_name} ${s.last_name}`.trim(),
+            role: s.role,
+          });
+        } else {
+          sessionStorage.removeItem('facilityos_staff_id');
+        }
+      })
+      .catch(() => sessionStorage.removeItem('facilityos_staff_id'))
+      .finally(() => setAuthReady(true));
+  }, [setCurrentStaff]);
 
   useEffect(() => {
     dbQuery('settings:all').then((s) => setSettings(s || {})).catch(() => {});
@@ -82,6 +107,19 @@ export default function App() {
         <Toasts toasts={toasts} />
       </>
     );
+  }
+
+  if (isElectron() && authReady && !currentStaff) {
+    return (
+      <>
+        <StaffSignIn variant="gate" />
+        <Toasts toasts={toasts} />
+      </>
+    );
+  }
+
+  if (isElectron() && !authReady) {
+    return <Spinner />;
   }
 
   return (

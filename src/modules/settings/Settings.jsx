@@ -3,7 +3,8 @@ import { dbQuery } from '../../hooks/useDb';
 import { useAppStore } from '../../store/appStore';
 import { PageHeader, Btn, Field, Input, Select, TabBar } from '../../components/ui';
 import { MODULE_REGISTRY } from '../../config/modules';
-import { downloadCsv, parseCsv } from '../../utils/download';
+import { downloadCsv } from '../../utils/download';
+import DataImportPanel from '../../components/DataImportPanel';
 import { listBackups, createBackup, restoreBackup, checkIntegrity, formatBytes } from '../../utils/serverApi';
 import CustomLimitsEditor from '../../components/CustomLimitsEditor';
 import MobileAccessPanel from '../../components/MobileAccessPanel';
@@ -671,21 +672,14 @@ export default function Settings() {
             </div>
           </div>
 
+          <DataImportPanel />
+
           <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
             <h3 className="text-sm font-semibold">Export</h3>
             <div className="flex flex-wrap gap-2">
               <Btn variant="secondary" size="sm" onClick={async () => { const r = await dbQuery('export:tests', { from_date: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10) }); downloadCsv(r); toast(`Exported ${r.count} tests`); }}>Water tests CSV</Btn>
               <Btn variant="secondary" size="sm" onClick={async () => { const r = await dbQuery('export:staff'); downloadCsv(r); toast(`Exported ${r.count} staff`); }}>Staff CSV</Btn>
             </div>
-            <h3 className="text-sm font-semibold border-t pt-4">Import staff</h3>
-            <input type="file" accept=".csv" className="text-sm" onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              const text = await file.text();
-              const rows = parseCsv(text);
-              const r = await dbQuery('import:staff', { rows });
-              toast(`Imported ${r.imported} staff`);
-            }} />
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 p-5">

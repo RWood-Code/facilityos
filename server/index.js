@@ -20,6 +20,7 @@ const { assertAllowedUpload, contentTypeForFilename } = require('./storage/valid
 const { getDistPath } = require('../electron/paths');
 const { setLicenceDataDir } = require('../shared/db/licencePaths');
 const { migratePlaintextPins } = require('../shared/db/pinAuth');
+const { ensureDefaultGateStaff } = require('../shared/db/defaultStaff');
 
 const PORT = Number(process.env.FACILITYOS_PORT || 3847);
 const HOST = process.env.FACILITYOS_HOST || '0.0.0.0';
@@ -60,6 +61,7 @@ async function bootstrapDatabase() {
     : { dbPath: DB_PATH };
   database = await FacilityDatabase.open(openOptions);
   await migratePlaintextPins(database.api);
+  await ensureDefaultGateStaff(database.api);
   return database;
 }
 

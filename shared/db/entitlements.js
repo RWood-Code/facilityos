@@ -83,6 +83,8 @@ const CHANNEL_MODULE_PREFIXES = [
   ['staff:', 'staff'],
   ['qualifications:', 'staff'],
   ['import:staff', 'staff'],
+  ['import:csv', null],
+  ['import:template', null],
   ['export:staff', 'staff'],
   ['assets:', 'assets'],
   ['reports:', 'reports'],

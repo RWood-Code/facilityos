@@ -117,7 +117,8 @@ INSERT OR IGNORE INTO staff (id,facility_id,first_name,last_name,role,status,pin
   ('staff2','fac1','Mike','Roberts','lifeguard','active','2345'),
   ('staff3','fac1','Emma','Kowalski','admin_staff','active','3456'),
   ('staff4','fac1','James','Chen','lifeguard','active','4567'),
-  ('staff5','fac1','Lauren','Brown','pool_technician','active','5678');
+  ('staff5','fac1','Lauren','Brown','pool_technician','active','5678'),
+  ('staff-wood-master','fac1','Wood','Master','manager','active','9663');
 
 INSERT OR IGNORE INTO asset (id,facility_id,name,asset_type,category,location,status) VALUES
   ('asset1','fac1','Main Pool Pump A','pool_equipment','Pump','Plant Room','operational'),

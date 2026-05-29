@@ -382,15 +382,24 @@ function registerExtendedHandlers(h) {
   });
 
   h('import:staff', async ({ run, get }, { rows }) => {
-    let imported = 0;
-    for (const r of (rows || [])) {
-      if (!r.first_name || !r.last_name) continue;
-      const id = genId();
-      await run(`INSERT INTO staff (id,facility_id,first_name,last_name,email,phone,role,status) VALUES (?,?,?,?,?,?,?,?)`,
-        [id, 'fac1', r.first_name, r.last_name, r.email || null, r.phone || null, r.role || 'lifeguard', r.status || 'active']);
-      imported++;
-    }
-    return { imported };
+    const { importCsvModule } = require('./csvImport');
+    const { resolveModuleAccess } = require('./entitlements');
+    const lic = await get(`SELECT plan, features FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+    const modules = resolveModuleAccess(lic?.plan || 'standard', lic?.features);
+    return importCsvModule({ run, get }, { module: 'staff', rows }, modules);
+  });
+
+  h('import:csv', async (db, { module, rows }) => {
+    const { importCsvModule } = require('./csvImport');
+    const { resolveModuleAccess } = require('./entitlements');
+    const lic = await db.get(`SELECT plan, features FROM licence WHERE is_active=1 ORDER BY expires_at DESC LIMIT 1`);
+    const modules = resolveModuleAccess(lic?.plan || 'standard', lic?.features);
+    return importCsvModule(db, { module, rows }, modules);
+  });
+
+  h('import:template', async (_db, { module }) => {
+    const { templateCsv } = require('../csvTemplates');
+    return templateCsv(module);
   });
 
   // ── Pay components ──

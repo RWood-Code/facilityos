@@ -8,13 +8,30 @@ let startedPort = null;
 
 async function waitForHealth(url, attempts = 40) {
   for (let i = 0; i < attempts; i++) {
-    try {
-      const res = await fetch(`${url}/api/health`);
-      if (res.ok) return true;
-    } catch (_) { /* retry */ }
+    const health = await fetchHealth(url);
+    if (health?.ok) return true;
     await new Promise((r) => setTimeout(r, 400));
   }
   return false;
+}
+
+async function fetchHealth(url) {
+  try {
+    const res = await fetch(`${String(url).replace(/\/$/, '')}/api/health`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch (_) {
+    return null;
+  }
+}
+
+/** True when the process on this port is our SQLite self-host server (not Docker hosted / dev postgres). */
+function isEmbeddedSelfHostHealth(health) {
+  if (!health?.ok) return false;
+  const { mode, dbDriver } = health.deployment || {};
+  if (mode === 'selfhost' && dbDriver === 'sqlite') return true;
+  // Pre-1.6 health payloads without deployment block
+  return !mode && Boolean(health.dbPath);
 }
 
 async function startEmbeddedServer(port) {
@@ -40,6 +57,11 @@ async function startEmbeddedServer(port) {
     env: {
       ...process.env,
       ...runtime.extraEnv,
+      // Always self-host SQLite for the Server installer — ignore dev/Docker env on the PC
+      FACILITYOS_DEPLOYMENT: 'selfhost',
+      FACILITYOS_AUTH_MODE: 'legacy',
+      FACILITYOS_DB_DRIVER: 'sqlite',
+      FACILITYOS_STORAGE: 'local',
       FACILITYOS_PORT: String(port),
       FACILITYOS_HOST: '0.0.0.0',
       FACILITYOS_DATA_DIR: dataDir,
@@ -71,4 +93,10 @@ function stopEmbeddedServer() {
   }
 }
 
-module.exports = { startEmbeddedServer, stopEmbeddedServer, waitForHealth };
+module.exports = {
+  startEmbeddedServer,
+  stopEmbeddedServer,
+  waitForHealth,
+  fetchHealth,
+  isEmbeddedSelfHostHealth,
+};

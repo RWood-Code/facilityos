@@ -3,7 +3,13 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { loadConfig, saveConfig, DEFAULT_PORT } = require('./config');
-const { startEmbeddedServer, stopEmbeddedServer, waitForHealth } = require('./server-manager');
+const {
+  startEmbeddedServer,
+  stopEmbeddedServer,
+  waitForHealth,
+  fetchHealth,
+  isEmbeddedSelfHostHealth,
+} = require('./server-manager');
 const { startEmbeddedCloudAgent, stopEmbeddedCloudAgent } = require('./cloud-agent-manager');
 const { initAutoUpdater, downloadUpdate, installUpdate } = require('./updater');
 const { getDistPath } = require('./paths');
@@ -71,25 +77,33 @@ async function ensureDataServer() {
   const config = loadConfig();
   const port = config.serverPort || DEFAULT_PORT;
   const localUrl = `http://127.0.0.1:${port}`;
-  const targetUrl = config.role === 'server' ? localUrl : config.serverUrl;
-
-  if (await waitForHealth(targetUrl, 3)) {
-    if (config.role === 'server' && config.serverUrl !== localUrl) saveConfig({ serverUrl: localUrl });
-    return targetUrl;
-  }
 
   if (config.role === 'server') {
+    const health = await fetchHealth(localUrl);
+    if (health?.ok && isEmbeddedSelfHostHealth(health)) {
+      saveConfig({ serverUrl: localUrl });
+      startEmbeddedCloudAgent(port);
+      return localUrl;
+    }
+    if (health?.ok) {
+      throw new Error(
+        `Port ${port} is already in use by another service (e.g. Docker hosted FacilityOS). Stop it, then restart FacilityOS Server.`,
+      );
+    }
     const url = await startEmbeddedServer(port);
     saveConfig({ serverUrl: url });
     startEmbeddedCloudAgent(port);
     return url;
   }
 
+  const targetUrl = config.serverUrl;
+  if (await waitForHealth(targetUrl, 3)) return targetUrl;
+
   console.warn('Remote data server not reachable:', config.serverUrl);
   return config.serverUrl;
 }
 
-function createWindow() {
+function createWindow(startupError = null) {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -113,9 +127,11 @@ function createWindow() {
     else initAutoUpdater(mainWindow);
   });
 
-  const load = isDev
-    ? mainWindow.loadURL('http://localhost:5173')
-    : loadProductionUi(mainWindow, loadConfig());
+  const load = startupError
+    ? mainWindow.loadFile(path.join(__dirname, 'load-error.html'), { query: { m: startupError } })
+    : isDev
+      ? mainWindow.loadURL('http://localhost:5173')
+      : loadProductionUi(mainWindow, loadConfig());
 
   load.catch((e) => console.error('Window load failed:', e.message));
 
